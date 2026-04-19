@@ -1,0 +1,1080 @@
+import customtkinter as ctk
+from tkinterdnd2 import TkinterDnD, DND_FILES
+import os
+import json
+import random
+import subprocess
+import sys
+from tkinter import Canvas, PhotoImage, filedialog, messagebox, simpledialog
+from .styles import Colors, Fonts, Metrics
+from .components import ScrollableFileList
+from .localization import (
+    WORKFLOW_SECTIONS,
+    available_languages,
+    field_description,
+    field_label,
+    get_language,
+    option_label,
+    option_labels,
+    option_value,
+    scheme_label,
+    scheme_value,
+    section_description,
+    section_title,
+    set_language,
+    t,
+)
+from logic.scanner import scan_path
+from logic.ffmpeg_runner import FfmpegRunner
+from logic.ffmpeg_paths import normalize_ffmpeg_dir
+from logic.media_info import MediaProber
+from logic.workflow import (
+    BUILTIN_SCHEMES,
+    DEFAULT_BUILTIN_SCHEME,
+    DEFAULT_WORKFLOW_CONFIG,
+    WorkflowVideoTask,
+    get_builtin_scheme,
+    normalize_workflow_config,
+)
+
+STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
+DEFAULT_FFMPEG_PATH = "./ffmpeg"
+
+class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
+    def __init__(self, files=None):
+        super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
+
+        # State
+        self.files = [] 
+        self.files_info = {}
+        self.app_state = {}
+        self.workflow_inputs = {}
+        self.workflow_specs = {}
+        self.workflow_value_labels = {}
+        self.crop_canvas = None
+        self.crop_preview_label = None
+        self.crop_preview_image = None
+        self.crop_preview_source_path = None
+        self.crop_preview_geometry = None
+        self.crop_drag_handle = None
+
+        # Initialize State first
+        self.load_state()
+        self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
+        set_language(self.app_state.get("language", get_language()))
+
+        self.title(t("app.title"))
+        self.geometry("1420x940")
+        self.minsize(1280, 860)
+        self.configure(fg_color=Colors.bg_dark)
+
+        # Layout
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+        self.create_sidebar()
+        self.create_main_area()
+        self.create_console_overlay()
+        
+        # DnD
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind('<<Drop>>', self.drop)
+        
+        # Logic
+        self.runner = FfmpegRunner(self.update_console, self.on_task_complete, self.update_progress)
+        
+        # Add initial files
+        if files:
+            for f in files:
+                self.process_input_path(f)
+
+    def drop(self, event):
+        if event.data:
+            # TkinterDnD returns list as weird string sometimes
+            # handle curly braces for paths with spaces
+            paths = self.parse_dnd_paths(event.data)
+            for p in paths:
+                self.process_input_path(p)
+
+    def parse_dnd_paths(self, data):
+        # Basic parser for Tcl list
+        if not data: return []
+        if data.startswith('{') and data.endswith('}'):
+            # This is a robust simplification, real Tcl parsing is harder but usually DnD sends space sep or brace wrapped
+            import re
+            return [p.strip('{}') for p in re.findall(r'\{.*?\}|\S+', data)]
+        return data.split()
+
+    def get_ffmpeg_path_setting(self):
+        if hasattr(self, "ffmpeg_path_var"):
+            return self.ffmpeg_path_var.get().strip() or DEFAULT_FFMPEG_PATH
+        return str(self.app_state.get("ffmpeg_path") or DEFAULT_FFMPEG_PATH).strip() or DEFAULT_FFMPEG_PATH
+
+    def apply_ffmpeg_path_setting(self, ffmpeg_path):
+        normalized = normalize_ffmpeg_dir(ffmpeg_path)
+        WorkflowVideoTask.set_ffmpeg_dir(normalized)
+        MediaProber.set_ffmpeg_dir(normalized)
+        return normalized
+
+    def save_ffmpeg_path(self):
+        if not hasattr(self, "ffmpeg_path_var"):
+            return
+
+        value = self.ffmpeg_path_var.get().strip().strip('"') or DEFAULT_FFMPEG_PATH
+        self.ffmpeg_path_var.set(value)
+        self.app_state["ffmpeg_path"] = value
+        self.apply_ffmpeg_path_setting(value)
+        self.save_state()
+
+    def choose_ffmpeg_path(self):
+        initial_dir = self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
+        selected = filedialog.askdirectory(
+            parent=self,
+            title=t("sidebar.ffmpeg_browse_title"),
+            initialdir=initial_dir if os.path.isdir(initial_dir) else os.getcwd(),
+        )
+        if selected:
+            self.ffmpeg_path_var.set(selected)
+            self.save_ffmpeg_path()
+
+    def create_sidebar(self):
+        self.sidebar = ctk.CTkFrame(self, width=320, corner_radius=0, fg_color=Colors.bg_card)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_rowconfigure(8, weight=1)
+        
+        self.logo = ctk.CTkLabel(self.sidebar, text=t("sidebar.logo"), font=Fonts.heading, text_color=Colors.accent)
+        self.logo.grid(row=0, column=0, padx=10, pady=15)
+        
+        self.btn_add_file = ctk.CTkButton(self.sidebar, text=t("sidebar.add_files"), height=30, fg_color=Colors.accent, hover_color=Colors.accent_hover, command=self.add_files_dialog)
+        self.btn_add_file.grid(row=1, column=0, padx=10, pady=2, sticky="ew")
+
+        self.btn_add_dir = ctk.CTkButton(self.sidebar, text=t("sidebar.add_directory"), height=30, fg_color=Colors.bg_card, border_color=Colors.accent, border_width=1, hover_color=Colors.accent_hover, command=self.add_dir_dialog)
+        self.btn_add_dir.grid(row=2, column=0, padx=10, pady=2, sticky="ew")
+
+        # GPU Checkbox
+        gpu_init = self.app_state.get("use_gpu", False)
+        self.gpu_var = ctk.BooleanVar(value=gpu_init)
+        self.chk_gpu = ctk.CTkCheckBox(self.sidebar, text=t("sidebar.gpu"), variable=self.gpu_var,
+                                       text_color=Colors.text_primary, font=Fonts.body,
+                                       command=self.save_state)
+        self.chk_gpu.grid(row=3, column=0, padx=10, pady=(15, 2), sticky="w")
+
+        self.gpu_help = ctk.CTkLabel(self.sidebar, text=t("sidebar.gpu_help"), font=Fonts.small,
+                                     text_color=Colors.text_secondary, anchor="w", justify="left",
+                                     wraplength=280)
+        self.gpu_help.grid(row=4, column=0, padx=10, pady=(0, 8), sticky="ew")
+
+        self.ffmpeg_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.ffmpeg_frame.grid(row=5, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self.ffmpeg_frame.grid_columnconfigure(0, weight=1)
+
+        self.ffmpeg_path_label = ctk.CTkLabel(
+            self.ffmpeg_frame,
+            text=t("sidebar.ffmpeg_path_label"),
+            font=Fonts.small,
+            text_color=Colors.text_secondary,
+            anchor="w",
+        )
+        self.ffmpeg_path_label.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        self.ffmpeg_path_var = ctk.StringVar(value=self.get_ffmpeg_path_setting())
+        self.ffmpeg_path_entry = ctk.CTkEntry(
+            self.ffmpeg_frame,
+            textvariable=self.ffmpeg_path_var,
+            height=28,
+            font=Fonts.small,
+        )
+        self.ffmpeg_path_entry.grid(row=1, column=0, padx=(0, 6), pady=(4, 2), sticky="ew")
+        self.ffmpeg_path_entry.bind("<FocusOut>", lambda _event: self.save_ffmpeg_path())
+        self.ffmpeg_path_entry.bind("<Return>", lambda _event: self.save_ffmpeg_path())
+
+        self.btn_ffmpeg_browse = ctk.CTkButton(
+            self.ffmpeg_frame,
+            text=t("sidebar.ffmpeg_browse"),
+            width=76,
+            height=28,
+            fg_color=Colors.bg_card,
+            border_color=Colors.border,
+            border_width=1,
+            command=self.choose_ffmpeg_path,
+        )
+        self.btn_ffmpeg_browse.grid(row=1, column=1, pady=(4, 2), sticky="e")
+
+        self.ffmpeg_path_help = ctk.CTkLabel(
+            self.ffmpeg_frame,
+            text=t("sidebar.ffmpeg_path_help"),
+            font=Fonts.small,
+            text_color=Colors.text_secondary,
+            anchor="w",
+            justify="left",
+            wraplength=280,
+        )
+        self.ffmpeg_path_help.grid(row=2, column=0, columnspan=2, sticky="ew")
+
+        self.language_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.language_frame.grid(row=6, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self.language_frame.grid_columnconfigure(1, weight=1)
+
+        self.language_label = ctk.CTkLabel(
+            self.language_frame,
+            text=t("sidebar.language"),
+            font=Fonts.small,
+            text_color=Colors.text_secondary,
+            anchor="w",
+        )
+        self.language_label.grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        self.language_var = ctk.StringVar(value=get_language())
+        self.language_combo = ctk.CTkComboBox(
+            self.language_frame,
+            values=available_languages(),
+            variable=self.language_var,
+            width=92,
+            height=28,
+            command=self.on_language_changed,
+        )
+        self.language_combo.grid(row=0, column=1, sticky="ew")
+        
+        # Save on exit
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.lbl_files = ctk.CTkLabel(self.sidebar, text=t("sidebar.queue"), font=Fonts.subheading, text_color=Colors.text_secondary, anchor="w")
+        self.lbl_files.grid(row=7, column=0, padx=10, pady=(10, 0), sticky="nw")
+        
+        self.file_list = ScrollableFileList(self.sidebar, remove_callback=self.remove_file, width=285)
+        self.file_list.grid(row=8, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Hint
+        self.lbl_hint = ctk.CTkLabel(self.sidebar, text=t("sidebar.drop_hint"), text_color=Colors.text_secondary, font=("Segoe UI", 9))
+        self.lbl_hint.grid(row=9, column=0, pady=5)
+
+    def on_language_changed(self, language):
+        workflow_settings = self.get_workflow_settings() if self.workflow_inputs else None
+        selected_scheme = scheme_value(self.workflow_scheme_var.get()) if hasattr(self, "workflow_scheme_var") else DEFAULT_BUILTIN_SCHEME
+
+        set_language(language)
+        self.language_var.set(get_language())
+        self.app_state["language"] = get_language()
+        self.apply_localized_texts(workflow_settings=workflow_settings, selected_scheme=selected_scheme)
+        self.save_state()
+
+    def apply_localized_texts(self, workflow_settings=None, selected_scheme=None):
+        self.title(t("app.title"))
+
+        if hasattr(self, "logo"):
+            self.logo.configure(text=t("sidebar.logo"))
+            self.btn_add_file.configure(text=t("sidebar.add_files"))
+            self.btn_add_dir.configure(text=t("sidebar.add_directory"))
+            self.chk_gpu.configure(text=t("sidebar.gpu"))
+            self.gpu_help.configure(text=t("sidebar.gpu_help"))
+            self.ffmpeg_path_label.configure(text=t("sidebar.ffmpeg_path_label"))
+            self.btn_ffmpeg_browse.configure(text=t("sidebar.ffmpeg_browse"))
+            self.ffmpeg_path_help.configure(text=t("sidebar.ffmpeg_path_help"))
+            self.language_label.configure(text=t("sidebar.language"))
+            self.language_combo.configure(values=available_languages())
+            self.lbl_files.configure(text=t("sidebar.queue"))
+            self.lbl_hint.configure(text=t("sidebar.drop_hint"))
+
+        if hasattr(self, "main_title"):
+            self.main_title.configure(text=t("workflow.title"))
+            self.main_subtitle.configure(text=t("workflow.subtitle"))
+            self.scheme_label.configure(text=t("workflow.scheme_label"))
+            self.btn_load_scheme.configure(text=t("workflow.load_scheme"))
+            self.btn_save_scheme.configure(text=t("workflow.save_scheme"))
+            self.btn_delete_scheme.configure(text=t("workflow.delete_scheme"))
+            self.btn_reset_scheme.configure(text=t("workflow.reset_scheme"))
+            self.btn_run_workflow.configure(text=t("workflow.run"))
+
+            selected_scheme = selected_scheme or scheme_value(self.workflow_scheme_var.get())
+            self.refresh_scheme_combo(selected=selected_scheme)
+
+            workflow_settings = workflow_settings or self.get_workflow_settings()
+            for child in self.scroll_frame.winfo_children():
+                child.destroy()
+            self.create_workflow_form(normalize_workflow_config(workflow_settings))
+
+        if hasattr(self, "console_title"):
+            self.console_title.configure(text=t("console.processing"))
+            if not self.runner.running:
+                self.btn_close_console.configure(text=t("console.close_stop"))
+
+    def create_main_area(self):
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(3, weight=1)
+
+        self.main_title = ctk.CTkLabel(self.main_frame, text=t("workflow.title"), font=("Segoe UI", 22, "bold"),
+                                       text_color=Colors.text_primary, anchor="w")
+        self.main_title.grid(row=0, column=0, sticky="ew")
+
+        self.main_subtitle = ctk.CTkLabel(self.main_frame, text=t("workflow.subtitle"), font=Fonts.body,
+                                          text_color=Colors.text_secondary, anchor="w", justify="left",
+                                          wraplength=920)
+        self.main_subtitle.grid(row=1, column=0, sticky="ew", pady=(4, 16))
+
+        self.create_scheme_bar()
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent")
+        self.scroll_frame.grid(row=3, column=0, sticky="nsew", pady=(14, 12))
+
+        initial_config = self.app_state.get("workflow_settings") or get_builtin_scheme(DEFAULT_BUILTIN_SCHEME)
+        self.create_workflow_form(normalize_workflow_config(initial_config))
+
+        self.btn_run_workflow = ctk.CTkButton(
+            self.main_frame,
+            text=t("workflow.run"),
+            height=42,
+            fg_color=Colors.success,
+            hover_color="#89b055",
+            font=("Segoe UI", 14, "bold"),
+            command=self.run_workflow
+        )
+        self.btn_run_workflow.grid(row=4, column=0, sticky="ew")
+
+    def create_scheme_bar(self):
+        bar = ctk.CTkFrame(self.main_frame, fg_color=Colors.bg_card, corner_radius=Metrics.radius,
+                           border_width=1, border_color=Colors.border)
+        bar.grid(row=2, column=0, sticky="ew")
+        bar.grid_columnconfigure(1, weight=1)
+
+        self.scheme_label = ctk.CTkLabel(bar, text=t("workflow.scheme_label"), font=Fonts.subheading,
+                                         text_color=Colors.text_primary)
+        self.scheme_label.grid(row=0, column=0, padx=(12, 8), pady=12, sticky="w")
+
+        initial_scheme = self.app_state.get("workflow_scheme_name", DEFAULT_BUILTIN_SCHEME)
+        self.workflow_scheme_var = ctk.StringVar(value=scheme_label(scheme_value(initial_scheme)))
+        self.scheme_combo = ctk.CTkComboBox(
+            bar,
+            values=self.get_scheme_names(),
+            variable=self.workflow_scheme_var,
+            height=30,
+            command=lambda _value: self.load_selected_scheme()
+        )
+        self.scheme_combo.grid(row=0, column=1, padx=8, pady=12, sticky="ew")
+
+        self.btn_load_scheme = ctk.CTkButton(bar, text=t("workflow.load_scheme"), width=92, height=30,
+                                             command=self.load_selected_scheme)
+        self.btn_load_scheme.grid(row=0, column=2, padx=4, pady=12)
+
+        self.btn_save_scheme = ctk.CTkButton(bar, text=t("workflow.save_scheme"), width=130, height=30,
+                                             fg_color=Colors.accent, hover_color=Colors.accent_hover,
+                                             command=self.save_current_scheme_as)
+        self.btn_save_scheme.grid(row=0, column=3, padx=4, pady=12)
+
+        self.btn_delete_scheme = ctk.CTkButton(bar, text=t("workflow.delete_scheme"), width=120, height=30,
+                                               fg_color=Colors.bg_card, border_color=Colors.error,
+                                               border_width=1, hover_color=Colors.error,
+                                               command=self.delete_selected_scheme)
+        self.btn_delete_scheme.grid(row=0, column=4, padx=4, pady=12)
+
+        self.btn_reset_scheme = ctk.CTkButton(bar, text=t("workflow.reset_scheme"), width=92, height=30,
+                                              fg_color=Colors.bg_card, border_color=Colors.border,
+                                              border_width=1, command=self.reset_workflow)
+        self.btn_reset_scheme.grid(row=0, column=5, padx=(4, 12), pady=12)
+
+    def create_workflow_form(self, initial_config):
+        self.workflow_inputs.clear()
+        self.workflow_specs.clear()
+        self.workflow_value_labels.clear()
+
+        for section in WORKFLOW_SECTIONS:
+            section_frame = ctk.CTkFrame(self.scroll_frame, fg_color=Colors.bg_card, corner_radius=Metrics.radius,
+                                         border_width=1, border_color=Colors.border)
+            section_frame.pack(fill="x", pady=(0, 12))
+            section_frame.grid_columnconfigure(0, weight=1)
+            section_frame.grid_columnconfigure(1, weight=0)
+
+            section_title_widget = ctk.CTkLabel(section_frame, text=section_title(section), font=("Segoe UI", 15, "bold"),
+                                         text_color=Colors.accent, anchor="w")
+            section_title_widget.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 2), sticky="ew")
+
+            section_desc = ctk.CTkLabel(section_frame, text=section_description(section), font=Fonts.body,
+                                        text_color=Colors.text_secondary, anchor="w", justify="left",
+                                        wraplength=820)
+            section_desc.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 10), sticky="ew")
+
+            for index, spec in enumerate(section["fields"], start=2):
+                self.add_workflow_field(section_frame, index, spec, initial_config.get(spec["key"], DEFAULT_WORKFLOW_CONFIG.get(spec["key"])))
+
+            if any(field["key"] == "crop_mode" for field in section["fields"]):
+                preview_row = len(section["fields"]) + 2
+                self.create_crop_preview(section_frame, preview_row)
+
+        self.update_crop_preview()
+
+    def add_workflow_field(self, parent, row, spec, value):
+        key = spec["key"]
+        self.workflow_specs[key] = spec
+
+        text_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        text_frame.grid(row=row, column=0, padx=14, pady=8, sticky="ew")
+        text_frame.grid_columnconfigure(0, weight=1)
+
+        label = ctk.CTkLabel(text_frame, text=field_label(spec), font=Fonts.subheading,
+                             text_color=Colors.text_primary, anchor="w")
+        label.grid(row=0, column=0, sticky="ew")
+
+        description = ctk.CTkLabel(text_frame, text=field_description(spec), font=Fonts.small,
+                                   text_color=Colors.text_secondary, anchor="w", justify="left",
+                                   wraplength=780)
+        description.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        control_frame = ctk.CTkFrame(parent, fg_color="transparent", width=300)
+        control_frame.grid(row=row, column=1, padx=14, pady=8, sticky="e")
+
+        if spec["type"] == "choice":
+            labels = option_labels(spec["options"])
+            combo = ctk.CTkComboBox(control_frame, values=labels, width=300, height=30,
+                                    command=lambda _value: self.on_workflow_changed())
+            combo.set(option_label(spec["options"], value))
+            combo.pack(fill="x")
+            self.workflow_inputs[key] = combo
+        elif spec["type"] == "slider":
+            value_row = ctk.CTkFrame(control_frame, fg_color="transparent")
+            value_row.pack(fill="x")
+            value_label = ctk.CTkLabel(value_row, text=self.format_slider_value(value), font=Fonts.subheading,
+                                       text_color=Colors.accent, width=48, anchor="e")
+            value_label.pack(side="right")
+            slider = ctk.CTkSlider(
+                control_frame,
+                from_=spec.get("min", 0),
+                to=spec.get("max", 100),
+                number_of_steps=spec.get("steps", 100),
+                width=300,
+                command=lambda new_value, field_key=key: self.on_slider_changed(field_key, new_value)
+            )
+            slider.set(float(value))
+            slider.pack(fill="x", pady=(4, 0))
+            self.workflow_inputs[key] = slider
+            self.workflow_value_labels[key] = value_label
+        else:
+            entry = ctk.CTkEntry(control_frame, width=300, height=30, font=Fonts.body)
+            entry.insert(0, str(value))
+            entry.bind("<KeyRelease>", lambda _event: self.on_workflow_changed())
+            entry.pack(fill="x")
+            self.workflow_inputs[key] = entry
+
+    def on_slider_changed(self, key, value):
+        if key in self.workflow_value_labels:
+            self.workflow_value_labels[key].configure(text=self.format_slider_value(value))
+        self.on_workflow_changed()
+
+    def on_workflow_changed(self):
+        self.app_state["workflow_settings"] = self.get_workflow_settings()
+        self.update_crop_preview()
+
+    def format_slider_value(self, value):
+        value = float(value)
+        return f"{int(value)}" if value.is_integer() else f"{value:.1f}"
+
+    def create_crop_preview(self, parent, row):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row, column=0, columnspan=2, padx=14, pady=(4, 14), sticky="ew")
+        frame.grid_columnconfigure(0, weight=1)
+
+        title_row = ctk.CTkFrame(frame, fg_color="transparent")
+        title_row.grid(row=0, column=0, pady=(4, 4), sticky="ew")
+        title_row.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(title_row, text=t("crop.preview_title"), font=("Segoe UI", 15, "bold"),
+                             text_color=Colors.accent, anchor="w")
+        title.grid(row=0, column=0, sticky="ew")
+
+        self.btn_random_crop_frame = ctk.CTkButton(
+            title_row,
+            text=t("crop.preview_random_frame"),
+            width=110,
+            height=26,
+            fg_color=Colors.bg_card,
+            border_color=Colors.border,
+            border_width=1,
+            command=self.reload_crop_preview_frame
+        )
+        self.btn_random_crop_frame.grid(row=0, column=1, padx=(8, 0), sticky="e")
+
+        self.crop_canvas = Canvas(frame, width=420, height=250, bg=Colors.bg_dark,
+                                  highlightthickness=1, highlightbackground=Colors.border)
+        self.crop_canvas.grid(row=1, column=0, pady=(6, 8))
+        self.crop_canvas.bind("<ButtonPress-1>", self.on_crop_canvas_press)
+        self.crop_canvas.bind("<B1-Motion>", self.on_crop_canvas_drag)
+        self.crop_canvas.bind("<ButtonRelease-1>", self.on_crop_canvas_release)
+
+        self.crop_preview_label = ctk.CTkLabel(frame, text="", font=Fonts.small,
+                                               text_color=Colors.text_secondary, anchor="w",
+                                               justify="left", wraplength=820)
+        self.crop_preview_label.grid(row=2, column=0, pady=(0, 4), sticky="ew")
+
+    def get_first_video_size(self):
+        for path in self.files:
+            info = self.files_info.get(path)
+            if info and getattr(info, "width", 0) and getattr(info, "height", 0):
+                return int(info.width), int(info.height), True
+        return 1920, 1080, False
+
+    def get_first_video_path(self):
+        for path in self.files:
+            info = self.files_info.get(path)
+            if info and getattr(info, "width", 0) and getattr(info, "height", 0):
+                return path
+        return None
+
+    def ensure_crop_preview_frame(self):
+        path = self.get_first_video_path()
+        if path == self.crop_preview_source_path:
+            return
+
+        self.crop_preview_source_path = path
+        self.crop_preview_image = None
+        if path:
+            self.extract_random_crop_frame(path)
+
+    def reload_crop_preview_frame(self):
+        path = self.get_first_video_path()
+        if path:
+            self.crop_preview_source_path = path
+            self.extract_random_crop_frame(path)
+        self.update_crop_preview()
+
+    def extract_random_crop_frame(self, path):
+        info = self.files_info.get(path)
+        duration = float(getattr(info, "duration", 0) or 0)
+        timestamp = random.uniform(0, max(duration - 0.2, 0.0)) if duration > 0.3 else 0
+
+        preview_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "preview_cache")
+        os.makedirs(preview_dir, exist_ok=True)
+        output_path = os.path.join(preview_dir, "crop_preview.png")
+
+        cmd = [
+            WorkflowVideoTask.get_ffmpeg_path(self.get_ffmpeg_path_setting()),
+            "-y",
+            "-ss", f"{timestamp:.3f}",
+            "-i", path,
+            "-frames:v", "1",
+            "-vf", "scale=376:206:force_original_aspect_ratio=decrease",
+            output_path
+        ]
+
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        try:
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=startupinfo,
+                timeout=20,
+                check=True
+            )
+            self.crop_preview_image = PhotoImage(file=output_path)
+        except Exception as e:
+            print(f"Failed to extract crop preview frame: {e}")
+            self.crop_preview_image = None
+
+    def update_crop_preview(self):
+        if not self.crop_canvas or not self.crop_preview_label:
+            return
+
+        self.ensure_crop_preview_frame()
+
+        try:
+            settings = self.get_workflow_settings()
+        except Exception:
+            settings = DEFAULT_WORKFLOW_CONFIG.copy()
+
+        source_w, source_h, has_real_size = self.get_first_video_size()
+        if settings.get("crop_mode") != "manual":
+            left = right = top = bottom = 0
+        else:
+            left = int(settings.get("crop_left", 0))
+            right = int(settings.get("crop_right", 0))
+            top = int(settings.get("crop_top", 0))
+            bottom = int(settings.get("crop_bottom", 0))
+
+        left = min(left, source_w - 1)
+        right = min(right, max(source_w - left - 1, 0))
+        top = min(top, source_h - 1)
+        bottom = min(bottom, max(source_h - top - 1, 0))
+        crop_w = max(source_w - left - right, 1)
+        crop_h = max(source_h - top - bottom, 1)
+
+        canvas_w = 420
+        canvas_h = 250
+        if self.crop_preview_image:
+            rect_w = self.crop_preview_image.width()
+            rect_h = self.crop_preview_image.height()
+            x0 = (canvas_w - rect_w) / 2
+            y0 = (canvas_h - rect_h) / 2
+            x1 = x0 + rect_w
+            y1 = y0 + rect_h
+            scale = min(rect_w / source_w, rect_h / source_h)
+        else:
+            margin = 22
+            scale = min((canvas_w - margin * 2) / source_w, (canvas_h - margin * 2) / source_h)
+            rect_w = source_w * scale
+            rect_h = source_h * scale
+            x0 = (canvas_w - rect_w) / 2
+            y0 = (canvas_h - rect_h) / 2
+            x1 = x0 + rect_w
+            y1 = y0 + rect_h
+
+        crop_x0 = x0 + left * scale
+        crop_y0 = y0 + top * scale
+        crop_x1 = x1 - right * scale
+        crop_y1 = y1 - bottom * scale
+
+        self.crop_canvas.delete("all")
+        if self.crop_preview_image:
+            self.crop_canvas.create_image(x0, y0, image=self.crop_preview_image, anchor="nw")
+        else:
+            self.crop_canvas.create_rectangle(x0, y0, x1, y1, fill="#111318", outline="")
+        self.crop_canvas.create_rectangle(x0, y0, x1, y1, outline=Colors.text_secondary, width=2)
+        self.crop_canvas.create_rectangle(crop_x0, crop_y0, crop_x1, crop_y1, outline=Colors.success, width=3)
+        self.draw_crop_handles(crop_x0, crop_y0, crop_x1, crop_y1)
+        self.crop_canvas.create_text(x0 + 8, y0 + 10, text=f"{source_w}x{source_h}", anchor="nw",
+                                     fill=Colors.text_secondary, font=("Segoe UI", 9))
+        self.crop_canvas.create_text(crop_x0 + 8, crop_y0 + 10, text=f"{crop_w}x{crop_h}", anchor="nw",
+                                     fill=Colors.success, font=("Segoe UI", 10, "bold"))
+        self.crop_preview_geometry = {
+            "source_w": source_w,
+            "source_h": source_h,
+            "x0": x0,
+            "y0": y0,
+            "x1": x1,
+            "y1": y1,
+            "scale": scale,
+            "left": left,
+            "right": right,
+            "top": top,
+            "bottom": bottom,
+        }
+
+        info_text = t(
+            "crop.preview_info",
+            source_w=source_w,
+            source_h=source_h,
+            crop_w=crop_w,
+            crop_h=crop_h,
+            left=left,
+            right=right,
+            top=top,
+            bottom=bottom,
+        )
+        if not has_real_size:
+            info_text = f"{t('crop.preview_no_file')}\n{info_text}"
+        self.crop_preview_label.configure(text=info_text)
+
+    def draw_crop_handles(self, x0, y0, x1, y1):
+        handle_points = {
+            "nw": (x0, y0),
+            "n": ((x0 + x1) / 2, y0),
+            "ne": (x1, y0),
+            "e": (x1, (y0 + y1) / 2),
+            "se": (x1, y1),
+            "s": ((x0 + x1) / 2, y1),
+            "sw": (x0, y1),
+            "w": (x0, (y0 + y1) / 2),
+        }
+        radius = 5
+        for handle, (x, y) in handle_points.items():
+            self.crop_canvas.create_oval(
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
+                fill=Colors.success,
+                outline="#ffffff",
+                width=1,
+                tags=("crop_handle", f"handle:{handle}")
+            )
+
+    def on_crop_canvas_press(self, event):
+        self.crop_drag_handle = self.find_crop_handle(event.x, event.y)
+
+    def on_crop_canvas_drag(self, event):
+        if not self.crop_drag_handle or not self.crop_preview_geometry:
+            return
+
+        geom = self.crop_preview_geometry
+        x = min(max(event.x, geom["x0"]), geom["x1"])
+        y = min(max(event.y, geom["y0"]), geom["y1"])
+        scale = geom["scale"] or 1
+
+        left = geom["left"]
+        right = geom["right"]
+        top = geom["top"]
+        bottom = geom["bottom"]
+        source_w = geom["source_w"]
+        source_h = geom["source_h"]
+        handle = self.crop_drag_handle
+
+        if "w" in handle:
+            left = round((x - geom["x0"]) / scale)
+            left = min(max(left, 0), source_w - right - 1)
+        if "e" in handle:
+            right = round((geom["x1"] - x) / scale)
+            right = min(max(right, 0), source_w - left - 1)
+        if "n" in handle:
+            top = round((y - geom["y0"]) / scale)
+            top = min(max(top, 0), source_h - bottom - 1)
+        if "s" in handle:
+            bottom = round((geom["y1"] - y) / scale)
+            bottom = min(max(bottom, 0), source_h - top - 1)
+
+        self.set_crop_values(left, right, top, bottom)
+
+    def on_crop_canvas_release(self, _event):
+        self.crop_drag_handle = None
+
+    def find_crop_handle(self, x, y):
+        closest = self.crop_canvas.find_closest(x, y)
+        if not closest:
+            return None
+
+        item = closest[0]
+        tags = self.crop_canvas.gettags(item)
+        if "crop_handle" not in tags:
+            return None
+
+        bbox = self.crop_canvas.bbox(item)
+        if not bbox:
+            return None
+        x0, y0, x1, y1 = bbox
+        if x < x0 - 6 or x > x1 + 6 or y < y0 - 6 or y > y1 + 6:
+            return None
+
+        for tag in tags:
+            if tag.startswith("handle:"):
+                return tag.split(":", 1)[1]
+        return None
+
+    def set_crop_values(self, left, right, top, bottom):
+        self.set_workflow_field_value("crop_mode", "manual")
+        self.set_workflow_field_value("crop_left", left)
+        self.set_workflow_field_value("crop_right", right)
+        self.set_workflow_field_value("crop_top", top)
+        self.set_workflow_field_value("crop_bottom", bottom)
+        self.on_workflow_changed()
+
+    def set_workflow_field_value(self, key, value):
+        widget = self.workflow_inputs.get(key)
+        spec = self.workflow_specs.get(key)
+        if not widget or not spec:
+            return
+
+        if spec["type"] == "choice":
+            widget.set(option_label(spec["options"], value))
+        elif spec["type"] == "slider":
+            widget.set(float(value))
+            if key in self.workflow_value_labels:
+                self.workflow_value_labels[key].configure(text=self.format_slider_value(value))
+        else:
+            widget.delete(0, "end")
+            widget.insert(0, str(value))
+
+    def get_saved_schemes(self):
+        schemes = self.app_state.setdefault("workflow_schemes", {})
+        return schemes if isinstance(schemes, dict) else {}
+
+    def get_scheme_names(self):
+        return [scheme_label(name) for name in BUILTIN_SCHEMES.keys()] + sorted(self.get_saved_schemes().keys())
+
+    def refresh_scheme_combo(self, selected=None):
+        names = self.get_scheme_names()
+        self.scheme_combo.configure(values=names)
+        if selected:
+            selected_name = scheme_value(selected)
+            selected_label = scheme_label(selected_name) if selected_name in BUILTIN_SCHEMES else selected_name
+            if selected_label in names:
+                self.workflow_scheme_var.set(selected_label)
+
+    def load_selected_scheme(self):
+        name = scheme_value(self.workflow_scheme_var.get())
+        saved = self.get_saved_schemes()
+
+        if name in saved:
+            config = normalize_workflow_config(saved[name])
+        else:
+            name = name if name in BUILTIN_SCHEMES else DEFAULT_BUILTIN_SCHEME
+            config = get_builtin_scheme(name)
+            self.workflow_scheme_var.set(scheme_label(name))
+
+        self.set_workflow_settings(config)
+        self.app_state["workflow_scheme_name"] = name
+        self.app_state["workflow_settings"] = self.get_workflow_settings()
+        self.save_state()
+
+    def reset_workflow(self):
+        self.workflow_scheme_var.set(scheme_label(DEFAULT_BUILTIN_SCHEME))
+        self.set_workflow_settings(get_builtin_scheme(DEFAULT_BUILTIN_SCHEME))
+        self.app_state["workflow_scheme_name"] = DEFAULT_BUILTIN_SCHEME
+        self.app_state["workflow_settings"] = self.get_workflow_settings()
+        self.save_state()
+
+    def save_current_scheme_as(self):
+        name = simpledialog.askstring(t("workflow.save_prompt_title"), t("workflow.save_prompt"), parent=self)
+        if not name:
+            return
+
+        name = name.strip()
+        if not name:
+            return
+
+        if scheme_value(name) in BUILTIN_SCHEMES:
+            messagebox.showwarning(t("workflow.save_prompt_title"), t("workflow.save_name_conflict"))
+            return
+
+        self.get_saved_schemes()[name] = self.get_workflow_settings()
+        self.app_state["workflow_scheme_name"] = name
+        self.save_state()
+        self.refresh_scheme_combo(selected=name)
+
+    def delete_selected_scheme(self):
+        name = scheme_value(self.workflow_scheme_var.get())
+        saved = self.get_saved_schemes()
+
+        if name in BUILTIN_SCHEMES:
+            messagebox.showinfo(t("workflow.delete_title"), t("workflow.delete_builtin"))
+            return
+        if name not in saved:
+            return
+        if not messagebox.askyesno(t("workflow.delete_title"), t("workflow.delete_confirm", name=name)):
+            return
+
+        del saved[name]
+        self.refresh_scheme_combo(selected=DEFAULT_BUILTIN_SCHEME)
+        self.reset_workflow()
+
+    def get_workflow_settings(self):
+        values = {}
+        for key, widget in self.workflow_inputs.items():
+            spec = self.workflow_specs[key]
+            if spec["type"] == "choice":
+                values[key] = option_value(spec["options"], widget.get())
+            elif spec["type"] == "slider":
+                values[key] = float(widget.get())
+            else:
+                raw = widget.get().strip()
+                if spec.get("value_type") == "int":
+                    try:
+                        values[key] = int(float(raw.replace(",", ".")))
+                    except ValueError:
+                        values[key] = DEFAULT_WORKFLOW_CONFIG.get(key)
+                elif spec.get("value_type") == "float":
+                    try:
+                        values[key] = float(raw.replace(",", "."))
+                    except ValueError:
+                        values[key] = DEFAULT_WORKFLOW_CONFIG.get(key)
+                else:
+                    values[key] = raw
+        return normalize_workflow_config(values)
+
+    def set_workflow_settings(self, settings):
+        config = normalize_workflow_config(settings)
+        for key, widget in self.workflow_inputs.items():
+            spec = self.workflow_specs[key]
+            value = config.get(key, DEFAULT_WORKFLOW_CONFIG.get(key))
+
+            if spec["type"] == "choice":
+                widget.set(option_label(spec["options"], value))
+            elif spec["type"] == "slider":
+                widget.set(float(value))
+                if key in self.workflow_value_labels:
+                    self.workflow_value_labels[key].configure(text=self.format_slider_value(value))
+            else:
+                widget.delete(0, "end")
+                widget.insert(0, str(value))
+        self.update_crop_preview()
+
+    def build_file_context(self, path):
+        duration = 0
+        has_audio = True
+        width = 0
+        height = 0
+        fps = 0
+        if path in self.files_info:
+            info = self.files_info[path]
+            duration = info.duration
+            width = int(getattr(info, "width", 0) or 0)
+            height = int(getattr(info, "height", 0) or 0)
+            fps = float(getattr(info, "fps", 0) or 0)
+            probe_has_data = any([
+                getattr(info, "duration", 0),
+                getattr(info, "width", 0),
+                getattr(info, "height", 0),
+                getattr(info, "fps", 0),
+                getattr(info, "v_codec", ""),
+                getattr(info, "a_codec", ""),
+                getattr(info, "size", 0),
+                getattr(info, "bitrate", "")
+            ])
+            if probe_has_data:
+                has_audio = bool(getattr(info, "a_codec", ""))
+        return duration, has_audio, width, height, fps
+
+    def create_console_overlay(self):
+        self.console_frame = ctk.CTkFrame(self, fg_color=Colors.bg_dark)
+        
+        self.console_title = ctk.CTkLabel(self.console_frame, text=t("console.processing"), font=Fonts.heading, text_color=Colors.text_primary)
+        self.console_title.pack(pady=(20, 10))
+        
+        self.progress_bar = ctk.CTkProgressBar(self.console_frame, width=400, height=10, progress_color=Colors.success)
+        self.progress_bar.pack(pady=(0, 20))
+        self.progress_bar.set(0)
+        
+        self.console_text = ctk.CTkTextbox(self.console_frame, font=Fonts.mono, text_color="#eeeeee", fg_color="#000000")
+        self.console_text.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        self.btn_close_console = ctk.CTkButton(self.console_frame, text=t("console.close_stop"), fg_color=Colors.error, command=self.stop_or_close_task)
+        self.btn_close_console.pack(pady=20)
+
+    def process_input_path(self, path):
+        self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
+        found = scan_path(path)
+        for f in found:
+            if f not in self.files:
+                self.files.append(f)
+                info = MediaProber.probe(f, self.get_ffmpeg_path_setting())
+                self.files_info[f] = info
+                self.file_list.add_file(f, info=info)
+        self.update_crop_preview()
+
+    def add_files_dialog(self):
+        filepaths = filedialog.askopenfilenames()
+        for fp in filepaths:
+            self.process_input_path(fp)
+
+    def add_dir_dialog(self):
+        dirpath = filedialog.askdirectory()
+        if dirpath:
+            self.process_input_path(dirpath)
+
+    def remove_file(self, path):
+        if path in self.files:
+            self.files.remove(path)
+            if path in self.files_info:
+                del self.files_info[path]
+            self.file_list.remove_file(path)
+            self.update_crop_preview()
+
+    def run_workflow(self):
+        if not self.files:
+            messagebox.showwarning(t("workflow.no_files_title"), t("workflow.no_files"))
+            return
+            
+        settings = self.get_workflow_settings()
+        self.app_state["workflow_settings"] = settings
+        self.app_state["workflow_scheme_name"] = scheme_value(self.workflow_scheme_var.get())
+        self.save_state()
+
+        task_instance = WorkflowVideoTask()
+        run_settings = settings.copy()
+        run_settings["use_gpu"] = self.gpu_var.get()
+        run_settings["ffmpeg_path"] = self.get_ffmpeg_path_setting()
+        
+        commands = []
+        durations = []
+        for f in self.files:
+            try:
+                duration, has_audio, width, height, fps = self.build_file_context(f)
+                
+                file_settings = run_settings.copy()
+                file_settings["duration"] = duration
+                file_settings["has_audio"] = has_audio
+                file_settings["source_width"] = width
+                file_settings["source_height"] = height
+                file_settings["source_fps"] = fps
+                
+                print(f"Building command for {f} with settings: {file_settings}")
+                cmd = task_instance.build_command(f, file_settings)
+                print(f"Built command: {cmd}")
+
+                commands.append(cmd)
+                durations.append(task_instance.get_output_duration(file_settings))
+                
+            except Exception as e:
+                print(f"Error building command for {f}: {e}")
+                import traceback
+                traceback.print_exc()
+
+        if not commands:
+            messagebox.showerror(t("workflow.no_commands_title"), t("workflow.no_commands"))
+            return
+
+        # Show Console
+        self.console_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.console_text.delete("1.0", "end")
+        self.btn_close_console.configure(text=t("console.stop"), fg_color=Colors.error)
+        
+        # Run
+        self.runner.run_commands(commands, durations)
+
+    def update_progress(self, percent):
+        def _update():
+            self.progress_bar.set(percent)
+        self.after(0, _update)
+
+    def update_console(self, text):
+        def _update():
+            self.console_text.insert("end", text)
+            self.console_text.see("end")
+        self.after(0, _update)
+
+    def stop_or_close_task(self):
+        if self.runner.running:
+            self.runner.stop()
+            self.console_text.insert("end", t("console.stopped"))
+            self.btn_close_console.configure(text=t("console.close_view"), fg_color=Colors.accent)
+        else:
+            self.console_frame.place_forget()
+            if self.runner.stopped or not self.runner.running:
+                 self.quit()
+
+    def on_task_complete(self, success):
+        def _finish():
+            if success:
+                self.console_text.insert("end", t("console.done"))
+                self.btn_close_console.configure(text=t("console.close_app"), fg_color=Colors.success, command=self.quit)
+                self.after(2000, self.quit)
+            else:
+                self.console_text.insert("end", t("console.finished"))
+                self.btn_close_console.configure(text=t("console.close_view"), fg_color=Colors.accent, command=lambda: self.console_frame.place_forget())
+        
+        self.after(0, _finish)
+
+    def load_state(self):
+        try:
+            if os.path.exists(STATE_FILE):
+                with open(STATE_FILE, 'r') as f:
+                    self.app_state = json.load(f)
+            else:
+                self.app_state = {}
+        except Exception:
+            self.app_state = {}
+
+    def save_state(self):
+        try:
+            self.app_state["language"] = get_language()
+            if hasattr(self, "ffmpeg_path_var"):
+                ffmpeg_path = self.ffmpeg_path_var.get().strip().strip('"') or DEFAULT_FFMPEG_PATH
+                self.ffmpeg_path_var.set(ffmpeg_path)
+                self.app_state["ffmpeg_path"] = ffmpeg_path
+                self.apply_ffmpeg_path_setting(ffmpeg_path)
+            if hasattr(self, 'gpu_var'):
+                self.app_state["use_gpu"] = self.gpu_var.get()
+            if getattr(self, "workflow_inputs", None):
+                self.app_state["workflow_settings"] = self.get_workflow_settings()
+                if hasattr(self, "workflow_scheme_var"):
+                    self.app_state["workflow_scheme_name"] = scheme_value(self.workflow_scheme_var.get())
+            with open(STATE_FILE, 'w') as f:
+                json.dump(self.app_state, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Failed to save state: {e}")
+
+    def on_closing(self):
+        self.save_state()
+        self.destroy()
