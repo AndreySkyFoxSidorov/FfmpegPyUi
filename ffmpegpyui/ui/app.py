@@ -5,15 +5,17 @@ import json
 import random
 import subprocess
 import sys
+import webbrowser
 from tkinter import Canvas, PhotoImage, filedialog, messagebox, simpledialog
 from .styles import Colors, Fonts, Metrics
 from .components import ScrollableFileList
 from .localization import (
     WORKFLOW_SECTIONS,
-    available_languages,
+    available_language_labels,
     field_description,
     field_label,
     get_language,
+    language_label,
     option_label,
     option_labels,
     option_value,
@@ -39,6 +41,7 @@ from logic.workflow import (
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
 DEFAULT_FFMPEG_PATH = "./ffmpeg"
+FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
 
 class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, files=None):
@@ -58,6 +61,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.crop_preview_source_path = None
         self.crop_preview_geometry = None
         self.crop_drag_handle = None
+        self.time_trim_canvas = None
+        self.time_trim_label = None
+        self.time_trim_geometry = None
+        self.time_trim_drag_handle = None
 
         # Initialize State first
         self.load_state()
@@ -138,6 +145,9 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.ffmpeg_path_var.set(selected)
             self.save_ffmpeg_path()
 
+    def open_ffmpeg_download(self, _event=None):
+        webbrowser.open_new_tab(FFMPEG_DOWNLOAD_URL)
+
     def create_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=320, corner_radius=0, fg_color=Colors.bg_card)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
@@ -212,6 +222,17 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.ffmpeg_path_help.grid(row=2, column=0, columnspan=2, sticky="ew")
 
+        self.ffmpeg_download_link = ctk.CTkLabel(
+            self.ffmpeg_frame,
+            text=t("sidebar.ffmpeg_download_link"),
+            font=Fonts.small,
+            text_color=Colors.accent,
+            anchor="w",
+            cursor="hand2",
+        )
+        self.ffmpeg_download_link.grid(row=3, column=0, columnspan=2, pady=(4, 0), sticky="ew")
+        self.ffmpeg_download_link.bind("<Button-1>", self.open_ffmpeg_download)
+
         self.language_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         self.language_frame.grid(row=6, column=0, padx=10, pady=(0, 10), sticky="ew")
         self.language_frame.grid_columnconfigure(1, weight=1)
@@ -225,12 +246,12 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.language_label.grid(row=0, column=0, padx=(0, 8), sticky="w")
 
-        self.language_var = ctk.StringVar(value=get_language())
+        self.language_var = ctk.StringVar(value=language_label(get_language()))
         self.language_combo = ctk.CTkComboBox(
             self.language_frame,
-            values=available_languages(),
+            values=available_language_labels(),
             variable=self.language_var,
-            width=92,
+            width=140,
             height=28,
             command=self.on_language_changed,
         )
@@ -254,7 +275,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         selected_scheme = scheme_value(self.workflow_scheme_var.get()) if hasattr(self, "workflow_scheme_var") else DEFAULT_BUILTIN_SCHEME
 
         set_language(language)
-        self.language_var.set(get_language())
+        self.language_var.set(language_label(get_language()))
         self.app_state["language"] = get_language()
         self.apply_localized_texts(workflow_settings=workflow_settings, selected_scheme=selected_scheme)
         self.save_state()
@@ -271,8 +292,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.ffmpeg_path_label.configure(text=t("sidebar.ffmpeg_path_label"))
             self.btn_ffmpeg_browse.configure(text=t("sidebar.ffmpeg_browse"))
             self.ffmpeg_path_help.configure(text=t("sidebar.ffmpeg_path_help"))
+            self.ffmpeg_download_link.configure(text=t("sidebar.ffmpeg_download_link"))
             self.language_label.configure(text=t("sidebar.language"))
-            self.language_combo.configure(values=available_languages())
+            self.language_combo.configure(values=available_language_labels())
+            self.language_var.set(language_label(get_language()))
             self.lbl_files.configure(text=t("sidebar.queue"))
             self.lbl_hint.configure(text=t("sidebar.drop_hint"))
 
@@ -401,8 +424,12 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if any(field["key"] == "crop_mode" for field in section["fields"]):
                 preview_row = len(section["fields"]) + 2
                 self.create_crop_preview(section_frame, preview_row)
+            if any(field["key"] == "trim_mode" for field in section["fields"]):
+                preview_row = len(section["fields"]) + 2
+                self.create_time_trim_preview(section_frame, preview_row)
 
         self.update_crop_preview()
+        self.update_time_trim_preview()
 
     def add_workflow_field(self, parent, row, spec, value):
         key = spec["key"]
@@ -464,6 +491,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def on_workflow_changed(self):
         self.app_state["workflow_settings"] = self.get_workflow_settings()
         self.update_crop_preview()
+        self.update_time_trim_preview()
 
     def format_slider_value(self, value):
         value = float(value)
@@ -506,12 +534,42 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                                justify="left", wraplength=820)
         self.crop_preview_label.grid(row=2, column=0, pady=(0, 4), sticky="ew")
 
+    def create_time_trim_preview(self, parent, row):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row, column=0, columnspan=2, padx=14, pady=(4, 14), sticky="ew")
+        frame.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(frame, text=t("trim.preview_title"), font=("Segoe UI", 15, "bold"),
+                             text_color=Colors.accent, anchor="w")
+        title.grid(row=0, column=0, pady=(4, 4), sticky="ew")
+
+        self.time_trim_canvas = Canvas(frame, width=560, height=120, bg=Colors.bg_dark,
+                                       highlightthickness=1, highlightbackground=Colors.border)
+        self.time_trim_canvas.grid(row=1, column=0, pady=(6, 8))
+        self.time_trim_canvas.bind("<ButtonPress-1>", self.on_time_trim_canvas_press)
+        self.time_trim_canvas.bind("<B1-Motion>", self.on_time_trim_canvas_drag)
+        self.time_trim_canvas.bind("<ButtonRelease-1>", self.on_time_trim_canvas_release)
+
+        self.time_trim_label = ctk.CTkLabel(frame, text="", font=Fonts.small,
+                                            text_color=Colors.text_secondary, anchor="w",
+                                            justify="left", wraplength=820)
+        self.time_trim_label.grid(row=2, column=0, pady=(0, 4), sticky="ew")
+
     def get_first_video_size(self):
         for path in self.files:
             info = self.files_info.get(path)
             if info and getattr(info, "width", 0) and getattr(info, "height", 0):
                 return int(info.width), int(info.height), True
         return 1920, 1080, False
+
+    def get_first_video_time_context(self):
+        for path in self.files:
+            info = self.files_info.get(path)
+            duration = float(getattr(info, "duration", 0) or 0)
+            if duration > 0:
+                fps = float(getattr(info, "fps", 0) or 0) or 30.0
+                return duration, fps, True
+        return 60.0, 30.0, False
 
     def get_first_video_path(self):
         for path in self.files:
@@ -667,6 +725,171 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not has_real_size:
             info_text = f"{t('crop.preview_no_file')}\n{info_text}"
         self.crop_preview_label.configure(text=info_text)
+
+    def update_time_trim_preview(self):
+        if not self.time_trim_canvas or not self.time_trim_label:
+            return
+
+        try:
+            settings = self.get_workflow_settings()
+        except Exception:
+            settings = DEFAULT_WORKFLOW_CONFIG.copy()
+
+        duration, fps, has_real_duration = self.get_first_video_time_context()
+        start_seconds, end_seconds = self.get_time_trim_seconds(settings, duration, fps)
+        keep_seconds = max(duration - start_seconds - end_seconds, 0.0)
+
+        canvas_w = 560
+        canvas_h = 120
+        x0 = 34
+        x1 = canvas_w - 34
+        y0 = 46
+        y1 = 82
+        scale = (x1 - x0) / duration if duration > 0 else 1
+        keep_x0 = x0 + start_seconds * scale
+        keep_x1 = x1 - end_seconds * scale
+        keep_x1 = max(keep_x1, keep_x0 + 2)
+
+        self.time_trim_canvas.delete("all")
+        self.time_trim_canvas.create_rectangle(x0, y0, x1, y1, fill="#111318", outline=Colors.text_secondary, width=2)
+        if keep_x0 > x0:
+            self.time_trim_canvas.create_rectangle(x0, y0, keep_x0, y1, fill="#3a2228", outline="")
+        if keep_x1 < x1:
+            self.time_trim_canvas.create_rectangle(keep_x1, y0, x1, y1, fill="#3a2228", outline="")
+        self.time_trim_canvas.create_rectangle(keep_x0, y0, keep_x1, y1, fill="#1f332e", outline=Colors.success, width=3)
+
+        self.draw_time_trim_handle("start", keep_x0, (y0 + y1) / 2)
+        self.draw_time_trim_handle("end", keep_x1, (y0 + y1) / 2)
+
+        self.time_trim_canvas.create_text(x0, y1 + 16, text="0s", anchor="nw",
+                                          fill=Colors.text_secondary, font=("Segoe UI", 9))
+        self.time_trim_canvas.create_text(x1, y1 + 16, text=f"{self.format_seconds_value(duration)}s", anchor="ne",
+                                          fill=Colors.text_secondary, font=("Segoe UI", 9))
+        self.time_trim_canvas.create_text((keep_x0 + keep_x1) / 2, y0 - 14,
+                                          text=f"{self.format_seconds_value(keep_seconds)}s",
+                                          anchor="center", fill=Colors.success, font=("Segoe UI", 10, "bold"))
+
+        self.time_trim_geometry = {
+            "duration": duration,
+            "fps": fps,
+            "x0": x0,
+            "x1": x1,
+            "start_seconds": start_seconds,
+            "end_seconds": end_seconds,
+        }
+
+        info_text = t(
+            "trim.preview_info",
+            start_seconds=self.format_seconds_value(start_seconds),
+            end_seconds=self.format_seconds_value(end_seconds),
+            start_frames=int(round(start_seconds * fps)),
+            end_frames=int(round(end_seconds * fps)),
+            keep_seconds=self.format_seconds_value(keep_seconds),
+        )
+        if not has_real_duration:
+            info_text = f"{t('trim.preview_no_file')}\n{info_text}"
+        self.time_trim_label.configure(text=info_text)
+
+    def get_time_trim_seconds(self, settings, duration, fps):
+        if settings.get("trim_mode") == "frames":
+            start_seconds = int(settings.get("trim_start_frames", 0) or 0) / fps if fps > 0 else 0.0
+            end_seconds = int(settings.get("trim_end_frames", 0) or 0) / fps if fps > 0 else 0.0
+        elif settings.get("trim_mode") == "seconds":
+            start_seconds = float(settings.get("trim_start_seconds", 0) or 0)
+            end_seconds = float(settings.get("trim_end_seconds", 0) or 0)
+        else:
+            start_seconds = 0.0
+            end_seconds = 0.0
+
+        start_seconds = min(max(start_seconds, 0.0), max(duration - 0.001, 0.0))
+        end_seconds = min(max(end_seconds, 0.0), max(duration - start_seconds - 0.001, 0.0))
+        return start_seconds, end_seconds
+
+    def draw_time_trim_handle(self, handle, x, y):
+        radius = 7
+        self.time_trim_canvas.create_line(x, y - 24, x, y + 24, fill=Colors.success, width=3,
+                                          tags=("time_trim_handle", f"handle:{handle}"))
+        self.time_trim_canvas.create_oval(
+            x - radius,
+            y - radius,
+            x + radius,
+            y + radius,
+            fill=Colors.success,
+            outline="#ffffff",
+            width=1,
+            tags=("time_trim_handle", f"handle:{handle}")
+        )
+
+    def on_time_trim_canvas_press(self, event):
+        self.time_trim_drag_handle = self.find_time_trim_handle(event.x, event.y)
+
+    def on_time_trim_canvas_drag(self, event):
+        if not self.time_trim_drag_handle or not self.time_trim_geometry:
+            return
+
+        geom = self.time_trim_geometry
+        duration = geom["duration"]
+        x0 = geom["x0"]
+        x1 = geom["x1"]
+        x = min(max(event.x, x0), x1)
+        span = max(x1 - x0, 1)
+        min_keep = min(0.001, duration)
+
+        start_seconds = geom["start_seconds"]
+        end_seconds = geom["end_seconds"]
+
+        if self.time_trim_drag_handle == "start":
+            start_seconds = ((x - x0) / span) * duration
+            start_seconds = min(max(start_seconds, 0.0), max(duration - end_seconds - min_keep, 0.0))
+        elif self.time_trim_drag_handle == "end":
+            end_seconds = ((x1 - x) / span) * duration
+            end_seconds = min(max(end_seconds, 0.0), max(duration - start_seconds - min_keep, 0.0))
+
+        self.set_time_trim_values(start_seconds, end_seconds, geom["fps"])
+
+    def on_time_trim_canvas_release(self, _event):
+        self.time_trim_drag_handle = None
+
+    def find_time_trim_handle(self, x, y):
+        closest = self.time_trim_canvas.find_closest(x, y)
+        if not closest:
+            return None
+
+        item = closest[0]
+        tags = self.time_trim_canvas.gettags(item)
+        if "time_trim_handle" not in tags:
+            return None
+
+        bbox = self.time_trim_canvas.bbox(item)
+        if not bbox:
+            return None
+        x0, y0, x1, y1 = bbox
+        if x < x0 - 8 or x > x1 + 8 or y < y0 - 8 or y > y1 + 8:
+            return None
+
+        for tag in tags:
+            if tag.startswith("handle:"):
+                return tag.split(":", 1)[1]
+        return None
+
+    def set_time_trim_values(self, start_seconds, end_seconds, fps):
+        settings = self.get_workflow_settings()
+        mode = settings.get("trim_mode")
+        if mode not in ("seconds", "frames"):
+            mode = "seconds"
+
+        self.set_workflow_field_value("trim_mode", mode)
+        self.set_workflow_field_value("trim_start_seconds", self.format_seconds_value(start_seconds))
+        self.set_workflow_field_value("trim_end_seconds", self.format_seconds_value(end_seconds))
+        self.set_workflow_field_value("trim_start_frames", int(round(start_seconds * fps)))
+        self.set_workflow_field_value("trim_end_frames", int(round(end_seconds * fps)))
+        self.on_workflow_changed()
+
+    def format_seconds_value(self, value):
+        value = max(float(value or 0), 0.0)
+        if abs(value - round(value)) < 0.005:
+            return str(int(round(value)))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
     def draw_crop_handles(self, x0, y0, x1, y1):
         handle_points = {
@@ -889,6 +1112,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 widget.delete(0, "end")
                 widget.insert(0, str(value))
         self.update_crop_preview()
+        self.update_time_trim_preview()
 
     def build_file_context(self, path):
         duration = 0
@@ -942,6 +1166,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.files_info[f] = info
                 self.file_list.add_file(f, info=info)
         self.update_crop_preview()
+        self.update_time_trim_preview()
 
     def add_files_dialog(self):
         filepaths = filedialog.askopenfilenames()
@@ -960,6 +1185,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 del self.files_info[path]
             self.file_list.remove_file(path)
             self.update_crop_preview()
+            self.update_time_trim_preview()
 
     def run_workflow(self):
         if not self.files:

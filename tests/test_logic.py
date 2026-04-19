@@ -15,8 +15,10 @@ from ffmpegpyui.ui.localization import (
     WORKFLOW_OPTIONS,
     WORKFLOW_SECTIONS,
     TRANSLATIONS,
+    available_language_labels,
     available_languages,
     get_language,
+    language_label,
     option_label,
     option_value,
     read_translation_csv,
@@ -32,6 +34,27 @@ class TestLogic(unittest.TestCase):
                 available_languages(),
                 ["EN", "UK", "RU", "ES", "IT", "DE", "KO", "NL", "FR", "PT", "ZH_TW", "ZH", "PL", "CS"],
             )
+            self.assertEqual(
+                available_language_labels(),
+                [
+                    "English",
+                    "Українська",
+                    "Русский",
+                    "Español",
+                    "Italiano",
+                    "Deutsch",
+                    "한국어",
+                    "Nederlands",
+                    "Français",
+                    "Português",
+                    "繁體中文",
+                    "简体中文",
+                    "Polski",
+                    "Čeština",
+                ],
+            )
+            self.assertEqual(language_label("RU"), "Русский")
+            self.assertEqual(set_language("Українська"), "UK")
             set_language("EN")
             self.assertEqual(t("sidebar.add_files"), "Add files")
             self.assertEqual(option_value("speed", option_label("speed", "4x")), "4x")
@@ -56,10 +79,14 @@ class TestLogic(unittest.TestCase):
             "sidebar.language",
             "sidebar.ffmpeg_path_label",
             "sidebar.ffmpeg_path_help",
+            "sidebar.ffmpeg_download_link",
             "sidebar.ffmpeg_browse",
             "sidebar.ffmpeg_browse_title",
             "workflow.run",
             "crop.preview_title",
+            "trim.preview_title",
+            "trim.preview_no_file",
+            "trim.preview_info",
         }
         for section in WORKFLOW_SECTIONS:
             expected_keys.add(section["title_key"])

@@ -8,6 +8,22 @@ TRANSLATIONS_FILE = os.path.join(os.path.dirname(__file__), "localization.csv")
 LANGUAGE = DEFAULT_LANGUAGE
 LANGUAGES = []
 TRANSLATIONS = {}
+LANGUAGE_DISPLAY_NAMES = {
+    "EN": "English",
+    "UK": "Українська",
+    "RU": "Русский",
+    "ES": "Español",
+    "IT": "Italiano",
+    "DE": "Deutsch",
+    "KO": "한국어",
+    "NL": "Nederlands",
+    "FR": "Français",
+    "PT": "Português",
+    "ZH_TW": "繁體中文",
+    "ZH": "简体中文",
+    "PL": "Polski",
+    "CS": "Čeština",
+}
 
 
 WORKFLOW_OPTIONS = {
@@ -324,6 +340,15 @@ def available_languages():
     return list(LANGUAGES)
 
 
+def language_label(language):
+    code = _find_language(language) or str(language or DEFAULT_LANGUAGE).strip()
+    return LANGUAGE_DISPLAY_NAMES.get(code, code)
+
+
+def available_language_labels():
+    return [language_label(language) for language in LANGUAGES]
+
+
 def get_language():
     return LANGUAGE
 
@@ -335,6 +360,9 @@ def set_language(language):
 
 
 def _normalize_language(language):
+    requested = _find_language(language)
+    if requested:
+        return requested
     requested = str(language or DEFAULT_LANGUAGE).strip()
     for available in LANGUAGES:
         if available.lower() == requested.lower():
@@ -343,6 +371,18 @@ def _normalize_language(language):
         if available.lower() == DEFAULT_LANGUAGE.lower():
             return available
     return LANGUAGES[0] if LANGUAGES else DEFAULT_LANGUAGE
+
+
+def _find_language(language):
+    requested = str(language or DEFAULT_LANGUAGE).strip()
+    requested_lower = requested.casefold()
+    for available in LANGUAGES:
+        if available.casefold() == requested_lower:
+            return available
+    for available in LANGUAGES:
+        if LANGUAGE_DISPLAY_NAMES.get(available, available).casefold() == requested_lower:
+            return available
+    return None
 
 
 def t(key, lang=None, **kwargs):
