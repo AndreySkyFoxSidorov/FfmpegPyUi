@@ -2,7 +2,7 @@ import csv
 import os
 
 
-DEFAULT_LANGUAGE = "RU"
+DEFAULT_LANGUAGE = "EN"
 TRANSLATIONS_FILE = os.path.join(os.path.dirname(__file__), "localization.csv")
 
 LANGUAGE = DEFAULT_LANGUAGE
