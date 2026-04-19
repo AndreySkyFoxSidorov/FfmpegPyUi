@@ -8,6 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ffmpegpyui.logic.media_info import MediaProber, MediaInfo
 from ffmpegpyui.logic.ffmpeg_runner import FfmpegRunner
+from ffmpegpyui.logic.input_paths import expand_input_paths
 from ffmpegpyui.logic.ffmpeg_paths import resolve_ffmpeg_executable
 from ffmpegpyui.logic.tasks import BaseTask, AviToMp4, AllToWedGL
 from ffmpegpyui.logic.workflow import WorkflowVideoTask, get_builtin_scheme
@@ -73,6 +74,33 @@ class TestLogic(unittest.TestCase):
 
         self.assertEqual(languages, ["EN", "XX"])
         self.assertEqual(translations["sample"]["XX"], "New language")
+
+    def test_input_paths_accepts_multiple_argv_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "one.mp4")
+            second = os.path.join(tmpdir, "two.mp4")
+            open(first, "w").close()
+            open(second, "w").close()
+
+            self.assertEqual(expand_input_paths([first, second]), [first, second])
+
+    def test_input_paths_splits_quoted_argument_bundle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "one file.mp4")
+            second = os.path.join(tmpdir, "two file.mp4")
+            open(first, "w").close()
+            open(second, "w").close()
+
+            self.assertEqual(expand_input_paths([f'"{first}" "{second}"']), [first, second])
+
+    def test_input_paths_splits_braced_drop_bundle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "one file.mp4")
+            second = os.path.join(tmpdir, "two file.mp4")
+            open(first, "w").close()
+            open(second, "w").close()
+
+            self.assertEqual(expand_input_paths([f"{{{first}}} {{{second}}}"]), [first, second])
 
     def test_workflow_localization_keys_exist(self):
         expected_keys = {
@@ -266,6 +294,56 @@ class TestLogic(unittest.TestCase):
         cmd = task.build_command("clip.mov", {"ffmpeg_path": ffmpeg_path, "has_audio": True})
 
         self.assertEqual(cmd[0], resolve_ffmpeg_executable(ffmpeg_path, "ffmpeg"))
+
+    def test_workflow_mp3_extracts_audio_only(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "clip.mov",
+            {
+                "output_container": "mp3",
+                "audio_quality": "high",
+                "trim_mode": "seconds",
+                "trim_start_seconds": 2,
+                "trim_end_seconds": 3,
+                "duration": 20,
+                "has_audio": True,
+            },
+        )
+
+        self.assertIn("-ss", cmd)
+        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
+        self.assertEqual(cmd[cmd.index("-ss") + 1], "2")
+        self.assertIn("-t", cmd)
+        self.assertLess(cmd.index("-t"), cmd.index("-i"))
+        self.assertEqual(cmd[cmd.index("-t") + 1], "15")
+        self.assertIn("0:a:0?", cmd)
+        self.assertIn("-vn", cmd)
+        self.assertEqual(cmd[cmd.index("-c:a") + 1], "libmp3lame")
+        self.assertEqual(cmd[cmd.index("-b:a") + 1], "256k")
+        self.assertNotIn("0:v:0", cmd)
+        self.assertNotIn("-c:v", cmd)
+        self.assertNotIn("-movflags", cmd)
+        self.assertTrue(cmd[-1].endswith("_processed.mp3"))
+
+    def test_workflow_mp3_without_audio_creates_bounded_silence(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "silent.mov",
+            {
+                "output_container": "mp3",
+                "duration": 12,
+                "has_audio": False,
+            },
+        )
+
+        self.assertIn("anullsrc=channel_layout=stereo:sample_rate=48000", cmd)
+        self.assertIn("1:a:0", cmd)
+        self.assertIn("-vn", cmd)
+        self.assertEqual(cmd[cmd.index("-c:a") + 1], "libmp3lame")
+        t_indexes = [index for index, value in enumerate(cmd) if value == "-t"]
+        self.assertEqual(cmd[t_indexes[-1] + 1], "12")
+        self.assertGreater(t_indexes[-1], cmd.index("-i"))
+        self.assertTrue(cmd[-1].endswith("_processed.mp3"))
 
     def test_ffmpeg_path_resolver_uses_platform_binary_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:

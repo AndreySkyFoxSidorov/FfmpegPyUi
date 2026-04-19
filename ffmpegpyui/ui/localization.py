@@ -30,6 +30,7 @@ WORKFLOW_OPTIONS = {
     "output_container": [
         {"value": "mp4", "label_key": "option.output_container.mp4"},
         {"value": "mov", "label_key": "option.output_container.mov"},
+        {"value": "mp3", "label_key": "option.output_container.mp3"},
     ],
     "resolution_mode": [
         {"value": "original", "label_key": "option.resolution_mode.original"},

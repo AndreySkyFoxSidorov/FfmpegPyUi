@@ -29,6 +29,7 @@ from .localization import (
 from logic.scanner import scan_path
 from logic.ffmpeg_runner import FfmpegRunner
 from logic.ffmpeg_paths import normalize_ffmpeg_dir
+from logic.input_paths import expand_input_paths
 from logic.media_info import MediaProber
 from logic.workflow import (
     BUILTIN_SCHEMES,
@@ -36,12 +37,33 @@ from logic.workflow import (
     DEFAULT_WORKFLOW_CONFIG,
     WorkflowVideoTask,
     get_builtin_scheme,
+    is_audio_output_format,
     normalize_workflow_config,
 )
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
 DEFAULT_FFMPEG_PATH = "./ffmpeg"
 FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
+AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS = {
+    "resolution_mode",
+    "custom_width",
+    "custom_height",
+    "quality_profile",
+    "encoding_speed",
+    "video_codec",
+    "crop_mode",
+    "crop_left",
+    "crop_right",
+    "crop_top",
+    "crop_bottom",
+    "fps_mode",
+    "speed",
+    "audio_mode",
+}
+CROP_PARAMETER_FIELDS = {"crop_left", "crop_right", "crop_top", "crop_bottom"}
+RESOLUTION_PARAMETER_FIELDS = {"custom_width", "custom_height"}
+TRIM_SECONDS_FIELDS = {"trim_start_seconds", "trim_end_seconds"}
+TRIM_FRAME_FIELDS = {"trim_start_frames", "trim_end_frames"}
 
 class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, files=None):
@@ -55,6 +77,9 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.workflow_inputs = {}
         self.workflow_specs = {}
         self.workflow_value_labels = {}
+        self.workflow_audio_output = False
+        self.workflow_visibility_state = None
+        self.workflow_config_snapshot = {}
         self.crop_canvas = None
         self.crop_preview_label = None
         self.crop_preview_image = None
@@ -93,25 +118,14 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Add initial files
         if files:
-            for f in files:
-                self.process_input_path(f)
+            self.process_input_paths(files)
 
     def drop(self, event):
         if event.data:
-            # TkinterDnD returns list as weird string sometimes
-            # handle curly braces for paths with spaces
-            paths = self.parse_dnd_paths(event.data)
-            for p in paths:
-                self.process_input_path(p)
+            self.process_input_paths(event.data)
 
     def parse_dnd_paths(self, data):
-        # Basic parser for Tcl list
-        if not data: return []
-        if data.startswith('{') and data.endswith('}'):
-            # This is a robust simplification, real Tcl parsing is harder but usually DnD sends space sep or brace wrapped
-            import re
-            return [p.strip('{}') for p in re.findall(r'\{.*?\}|\S+', data)]
-        return data.split()
+        return expand_input_paths(data)
 
     def get_ffmpeg_path_setting(self):
         if hasattr(self, "ffmpeg_path_var"):
@@ -398,11 +412,23 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_reset_scheme.grid(row=0, column=5, padx=(4, 12), pady=12)
 
     def create_workflow_form(self, initial_config):
+        initial_config = normalize_workflow_config(initial_config)
         self.workflow_inputs.clear()
         self.workflow_specs.clear()
         self.workflow_value_labels.clear()
+        self.reset_workflow_previews()
+        self.workflow_audio_output = self.is_audio_output_config(initial_config)
+        self.workflow_visibility_state = self.get_workflow_visibility_state(initial_config)
+        self.workflow_config_snapshot = initial_config
 
         for section in WORKFLOW_SECTIONS:
+            visible_fields = [
+                field for field in section["fields"]
+                if self.is_workflow_field_visible(field, initial_config)
+            ]
+            if not visible_fields:
+                continue
+
             section_frame = ctk.CTkFrame(self.scroll_frame, fg_color=Colors.bg_card, corner_radius=Metrics.radius,
                                          border_width=1, border_color=Colors.border)
             section_frame.pack(fill="x", pady=(0, 12))
@@ -418,18 +444,68 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                         wraplength=820)
             section_desc.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 10), sticky="ew")
 
-            for index, spec in enumerate(section["fields"], start=2):
+            for index, spec in enumerate(visible_fields, start=2):
                 self.add_workflow_field(section_frame, index, spec, initial_config.get(spec["key"], DEFAULT_WORKFLOW_CONFIG.get(spec["key"])))
 
-            if any(field["key"] == "crop_mode" for field in section["fields"]):
-                preview_row = len(section["fields"]) + 2
+            if self.should_show_crop_preview(initial_config, visible_fields):
+                preview_row = len(visible_fields) + 2
                 self.create_crop_preview(section_frame, preview_row)
-            if any(field["key"] == "trim_mode" for field in section["fields"]):
-                preview_row = len(section["fields"]) + 2
+            if self.should_show_time_trim_preview(initial_config, visible_fields):
+                preview_row = len(visible_fields) + 2
                 self.create_time_trim_preview(section_frame, preview_row)
 
         self.update_crop_preview()
         self.update_time_trim_preview()
+
+    def reset_workflow_previews(self):
+        self.crop_canvas = None
+        self.crop_preview_label = None
+        self.crop_preview_image = None
+        self.crop_preview_geometry = None
+        self.crop_drag_handle = None
+        self.time_trim_canvas = None
+        self.time_trim_label = None
+        self.time_trim_geometry = None
+        self.time_trim_drag_handle = None
+
+    def is_audio_output_config(self, config):
+        return is_audio_output_format(normalize_workflow_config(config)["output_container"])
+
+    def get_workflow_visibility_state(self, config):
+        config = normalize_workflow_config(config)
+        return (
+            self.is_audio_output_config(config),
+            config["resolution_mode"],
+            config["crop_mode"],
+            config["trim_mode"],
+        )
+
+    def is_workflow_field_visible(self, spec, config):
+        config = normalize_workflow_config(config)
+        key = spec["key"]
+        if self.is_audio_output_config(config) and key in AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS:
+            return False
+        if key in RESOLUTION_PARAMETER_FIELDS and config["resolution_mode"] != "custom":
+            return False
+        if key in CROP_PARAMETER_FIELDS and config["crop_mode"] != "manual":
+            return False
+        if key in TRIM_SECONDS_FIELDS and config["trim_mode"] != "seconds":
+            return False
+        if key in TRIM_FRAME_FIELDS and config["trim_mode"] != "frames":
+            return False
+        return True
+
+    def should_show_crop_preview(self, config, visible_fields):
+        return (
+            normalize_workflow_config(config)["crop_mode"] == "manual"
+            and any(field["key"] == "crop_mode" for field in visible_fields)
+        )
+
+    def should_show_time_trim_preview(self, config, visible_fields):
+        return (
+            normalize_workflow_config(config)["trim_mode"] != "none"
+            and any(field["key"] == "trim_mode" for field in visible_fields)
+        )
 
     def add_workflow_field(self, parent, row, spec, value):
         key = spec["key"]
@@ -489,7 +565,16 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.on_workflow_changed()
 
     def on_workflow_changed(self):
-        self.app_state["workflow_settings"] = self.get_workflow_settings()
+        settings = self.get_workflow_settings()
+        self.workflow_config_snapshot = settings
+        self.app_state["workflow_settings"] = settings
+        visibility_state = self.get_workflow_visibility_state(settings)
+        if visibility_state != self.workflow_visibility_state:
+            for child in self.scroll_frame.winfo_children():
+                child.destroy()
+            self.create_workflow_form(settings)
+            self.app_state["workflow_settings"] = self.get_workflow_settings()
+            return
         self.update_crop_preview()
         self.update_time_trim_preview()
 
@@ -1073,7 +1158,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.reset_workflow()
 
     def get_workflow_settings(self):
-        values = {}
+        values = {
+            **DEFAULT_WORKFLOW_CONFIG,
+            **(getattr(self, "workflow_config_snapshot", None) or self.app_state.get("workflow_settings") or {}),
+        }
         for key, widget in self.workflow_inputs.items():
             spec = self.workflow_specs[key]
             if spec["type"] == "choice":
@@ -1098,6 +1186,13 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def set_workflow_settings(self, settings):
         config = normalize_workflow_config(settings)
+        if self.get_workflow_visibility_state(config) != self.workflow_visibility_state:
+            for child in self.scroll_frame.winfo_children():
+                child.destroy()
+            self.create_workflow_form(config)
+            self.app_state["workflow_settings"] = self.get_workflow_settings()
+            return
+
         for key, widget in self.workflow_inputs.items():
             spec = self.workflow_specs[key]
             value = config.get(key, DEFAULT_WORKFLOW_CONFIG.get(key))
@@ -1111,6 +1206,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             else:
                 widget.delete(0, "end")
                 widget.insert(0, str(value))
+        self.workflow_config_snapshot = config
         self.update_crop_preview()
         self.update_time_trim_preview()
 
@@ -1156,27 +1252,43 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_close_console = ctk.CTkButton(self.console_frame, text=t("console.close_stop"), fg_color=Colors.error, command=self.stop_or_close_task)
         self.btn_close_console.pack(pady=20)
 
-    def process_input_path(self, path):
+    def process_input_paths(self, paths):
+        added = 0
+        for path in expand_input_paths(paths):
+            added += self.process_input_path(path, update_previews=False)
+        if added:
+            self.update_crop_preview()
+            self.update_time_trim_preview()
+        return added
+
+    def process_input_path(self, path, update_previews=True):
         self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
+        path = str(path or "").strip()
+        if not path:
+            return 0
+
         found = scan_path(path)
+        added = 0
         for f in found:
             if f not in self.files:
                 self.files.append(f)
                 info = MediaProber.probe(f, self.get_ffmpeg_path_setting())
                 self.files_info[f] = info
                 self.file_list.add_file(f, info=info)
-        self.update_crop_preview()
-        self.update_time_trim_preview()
+                added += 1
+        if update_previews and added:
+            self.update_crop_preview()
+            self.update_time_trim_preview()
+        return added
 
     def add_files_dialog(self):
         filepaths = filedialog.askopenfilenames()
-        for fp in filepaths:
-            self.process_input_path(fp)
+        self.process_input_paths(filepaths)
 
     def add_dir_dialog(self):
         dirpath = filedialog.askdirectory()
         if dirpath:
-            self.process_input_path(dirpath)
+            self.process_input_paths(dirpath)
 
     def remove_file(self, path):
         if path in self.files:

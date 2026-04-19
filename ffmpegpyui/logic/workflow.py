@@ -121,6 +121,12 @@ AUDIO_BITRATES = {
 OUTPUT_EXTENSIONS = {
     "mp4": ".mp4",
     "mov": ".mov",
+    "mp3": ".mp3",
+}
+
+AUDIO_OUTPUT_FORMATS = {"mp3"}
+AUDIO_OUTPUT_CODECS = {
+    "mp3": "libmp3lame",
 }
 
 
@@ -192,6 +198,10 @@ def normalize_workflow_config(config):
     return normalized
 
 
+def is_audio_output_format(output_container):
+    return output_container in AUDIO_OUTPUT_FORMATS
+
+
 def _positive_int(value, default):
     try:
         value = int(float(str(value).replace(",", ".")))
@@ -241,6 +251,9 @@ class WorkflowVideoTask(BaseTask):
 
     def build_command(self, input_file, settings):
         config = normalize_workflow_config(settings)
+
+        if is_audio_output_format(config["output_container"]):
+            return self._build_audio_output_command(input_file, settings, config)
 
         include_audio = config["audio_mode"] != "mute"
         ff_settings = {
@@ -300,6 +313,50 @@ class WorkflowVideoTask(BaseTask):
 
         self.add_shortest_if_needed(cmd, ff_settings)
         cmd.extend(["-movflags", "+faststart", output_path])
+        return cmd
+
+    def _build_audio_output_command(self, input_file, settings, config):
+        ff_settings = {
+            "speed": config["speed"],
+            "include_audio": True,
+            "has_audio": settings.get("has_audio", True),
+        }
+        output_path = self._output_path(input_file, config)
+        audio_filters = self._audio_filters(config, ff_settings)
+        trim_start, trim_duration = self._trim_window(config)
+
+        cmd = [self.get_ffmpeg_path(settings.get("ffmpeg_path")), "-y"]
+        if trim_start > 0:
+            cmd.extend(["-ss", _format_seconds(trim_start)])
+        if trim_duration is not None:
+            cmd.extend(["-t", _format_seconds(trim_duration)])
+        cmd.extend(["-i", input_file])
+
+        self.add_silent_audio_input(cmd, ff_settings)
+        self.add_filter_args(cmd, audio_filters=audio_filters)
+
+        if self.needs_silent_audio(ff_settings):
+            cmd.extend(["-map", "1:a:0"])
+        else:
+            cmd.extend(["-map", "0:a:0?"])
+
+        cmd.append("-vn")
+        cmd.extend([
+            "-c:a",
+            AUDIO_OUTPUT_CODECS.get(config["output_container"], "aac"),
+            "-b:a",
+            AUDIO_BITRATES[config["audio_quality"]],
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+        ])
+
+        if self.needs_silent_audio(ff_settings):
+            silent_duration = self.get_output_duration({**settings, **config})
+            cmd.extend(["-t", _format_seconds(silent_duration if silent_duration > 0 else 1.0)])
+
+        cmd.append(output_path)
         return cmd
 
     def get_output_duration(self, settings):
