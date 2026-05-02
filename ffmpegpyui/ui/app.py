@@ -70,14 +70,12 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         super().__init__()
         self.TkdndVersion = TkinterDnD._require(self)
 
-        # State
-        self.files = [] 
+        self.files = []
         self.files_info = {}
         self.app_state = {}
         self.workflow_inputs = {}
         self.workflow_specs = {}
         self.workflow_value_labels = {}
-        self.workflow_audio_output = False
         self.workflow_visibility_state = None
         self.workflow_config_snapshot = {}
         self.crop_canvas = None
@@ -91,7 +89,6 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.time_trim_geometry = None
         self.time_trim_drag_handle = None
 
-        # Initialize State first
         self.load_state()
         self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
         set_language(self.app_state.get("language", get_language()))
@@ -101,31 +98,24 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.minsize(1280, 860)
         self.configure(fg_color=Colors.bg_dark)
 
-        # Layout
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
+
         self.create_sidebar()
         self.create_main_area()
         self.create_console_overlay()
-        
-        # DnD
+
         self.drop_target_register(DND_FILES)
         self.dnd_bind('<<Drop>>', self.drop)
-        
-        # Logic
+
         self.runner = FfmpegRunner(self.update_console, self.on_task_complete, self.update_progress)
-        
-        # Add initial files
+
         if files:
             self.process_input_paths(files)
 
     def drop(self, event):
         if event.data:
             self.process_input_paths(event.data)
-
-    def parse_dnd_paths(self, data):
-        return expand_input_paths(data)
 
     def get_ffmpeg_path_setting(self):
         if hasattr(self, "ffmpeg_path_var"):
@@ -166,17 +156,16 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.sidebar = ctk.CTkFrame(self, width=320, corner_radius=0, fg_color=Colors.bg_card)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(8, weight=1)
-        
+
         self.logo = ctk.CTkLabel(self.sidebar, text=t("sidebar.logo"), font=Fonts.heading, text_color=Colors.accent)
         self.logo.grid(row=0, column=0, padx=10, pady=15)
-        
+
         self.btn_add_file = ctk.CTkButton(self.sidebar, text=t("sidebar.add_files"), height=30, fg_color=Colors.accent, hover_color=Colors.accent_hover, command=self.add_files_dialog)
         self.btn_add_file.grid(row=1, column=0, padx=10, pady=2, sticky="ew")
 
         self.btn_add_dir = ctk.CTkButton(self.sidebar, text=t("sidebar.add_directory"), height=30, fg_color=Colors.bg_card, border_color=Colors.accent, border_width=1, hover_color=Colors.accent_hover, command=self.add_dir_dialog)
         self.btn_add_dir.grid(row=2, column=0, padx=10, pady=2, sticky="ew")
 
-        # GPU Checkbox
         gpu_init = self.app_state.get("use_gpu", False)
         self.gpu_var = ctk.BooleanVar(value=gpu_init)
         self.chk_gpu = ctk.CTkCheckBox(self.sidebar, text=t("sidebar.gpu"), variable=self.gpu_var,
@@ -270,17 +259,15 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             command=self.on_language_changed,
         )
         self.language_combo.grid(row=0, column=1, sticky="ew")
-        
-        # Save on exit
+
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.lbl_files = ctk.CTkLabel(self.sidebar, text=t("sidebar.queue"), font=Fonts.subheading, text_color=Colors.text_secondary, anchor="w")
         self.lbl_files.grid(row=7, column=0, padx=10, pady=(10, 0), sticky="nw")
-        
+
         self.file_list = ScrollableFileList(self.sidebar, remove_callback=self.remove_file, width=285)
         self.file_list.grid(row=8, column=0, padx=5, pady=5, sticky="nsew")
-        
-        # Hint
+
         self.lbl_hint = ctk.CTkLabel(self.sidebar, text=t("sidebar.drop_hint"), text_color=Colors.text_secondary, font=("Segoe UI", 9))
         self.lbl_hint.grid(row=9, column=0, pady=5)
 
@@ -416,8 +403,15 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.workflow_inputs.clear()
         self.workflow_specs.clear()
         self.workflow_value_labels.clear()
-        self.reset_workflow_previews()
-        self.workflow_audio_output = self.is_audio_output_config(initial_config)
+        self.crop_canvas = None
+        self.crop_preview_label = None
+        self.crop_preview_image = None
+        self.crop_preview_geometry = None
+        self.crop_drag_handle = None
+        self.time_trim_canvas = None
+        self.time_trim_label = None
+        self.time_trim_geometry = None
+        self.time_trim_drag_handle = None
         self.workflow_visibility_state = self.get_workflow_visibility_state(initial_config)
         self.workflow_config_snapshot = initial_config
 
@@ -447,34 +441,26 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             for index, spec in enumerate(visible_fields, start=2):
                 self.add_workflow_field(section_frame, index, spec, initial_config.get(spec["key"], DEFAULT_WORKFLOW_CONFIG.get(spec["key"])))
 
-            if self.should_show_crop_preview(initial_config, visible_fields):
+            if (
+                initial_config["crop_mode"] == "manual"
+                and any(field["key"] == "crop_mode" for field in visible_fields)
+            ):
                 preview_row = len(visible_fields) + 2
                 self.create_crop_preview(section_frame, preview_row)
-            if self.should_show_time_trim_preview(initial_config, visible_fields):
+            if (
+                initial_config["trim_mode"] != "none"
+                and any(field["key"] == "trim_mode" for field in visible_fields)
+            ):
                 preview_row = len(visible_fields) + 2
                 self.create_time_trim_preview(section_frame, preview_row)
 
         self.update_crop_preview()
         self.update_time_trim_preview()
 
-    def reset_workflow_previews(self):
-        self.crop_canvas = None
-        self.crop_preview_label = None
-        self.crop_preview_image = None
-        self.crop_preview_geometry = None
-        self.crop_drag_handle = None
-        self.time_trim_canvas = None
-        self.time_trim_label = None
-        self.time_trim_geometry = None
-        self.time_trim_drag_handle = None
-
-    def is_audio_output_config(self, config):
-        return is_audio_output_format(normalize_workflow_config(config)["output_container"])
-
     def get_workflow_visibility_state(self, config):
         config = normalize_workflow_config(config)
         return (
-            self.is_audio_output_config(config),
+            is_audio_output_format(config["output_container"]),
             config["resolution_mode"],
             config["crop_mode"],
             config["trim_mode"],
@@ -483,7 +469,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def is_workflow_field_visible(self, spec, config):
         config = normalize_workflow_config(config)
         key = spec["key"]
-        if self.is_audio_output_config(config) and key in AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS:
+        if is_audio_output_format(config["output_container"]) and key in AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS:
             return False
         if key in RESOLUTION_PARAMETER_FIELDS and config["resolution_mode"] != "custom":
             return False
@@ -494,18 +480,6 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if key in TRIM_FRAME_FIELDS and config["trim_mode"] != "frames":
             return False
         return True
-
-    def should_show_crop_preview(self, config, visible_fields):
-        return (
-            normalize_workflow_config(config)["crop_mode"] == "manual"
-            and any(field["key"] == "crop_mode" for field in visible_fields)
-        )
-
-    def should_show_time_trim_preview(self, config, visible_fields):
-        return (
-            normalize_workflow_config(config)["trim_mode"] != "none"
-            and any(field["key"] == "trim_mode" for field in visible_fields)
-        )
 
     def add_workflow_field(self, parent, row, spec, value):
         key = spec["key"]
@@ -640,38 +614,12 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                             justify="left", wraplength=820)
         self.time_trim_label.grid(row=2, column=0, pady=(0, 4), sticky="ew")
 
-    def get_first_video_size(self):
-        for path in self.files:
-            info = self.files_info.get(path)
-            if info and getattr(info, "width", 0) and getattr(info, "height", 0):
-                return int(info.width), int(info.height), True
-        return 1920, 1080, False
-
-    def get_first_video_time_context(self):
-        for path in self.files:
-            info = self.files_info.get(path)
-            duration = float(getattr(info, "duration", 0) or 0)
-            if duration > 0:
-                fps = float(getattr(info, "fps", 0) or 0) or 30.0
-                return duration, fps, True
-        return 60.0, 30.0, False
-
     def get_first_video_path(self):
         for path in self.files:
             info = self.files_info.get(path)
             if info and getattr(info, "width", 0) and getattr(info, "height", 0):
                 return path
         return None
-
-    def ensure_crop_preview_frame(self):
-        path = self.get_first_video_path()
-        if path == self.crop_preview_source_path:
-            return
-
-        self.crop_preview_source_path = path
-        self.crop_preview_image = None
-        if path:
-            self.extract_random_crop_frame(path)
 
     def reload_crop_preview_frame(self):
         path = self.get_first_video_path()
@@ -722,14 +670,29 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not self.crop_canvas or not self.crop_preview_label:
             return
 
-        self.ensure_crop_preview_frame()
-
         try:
             settings = self.get_workflow_settings()
         except Exception:
             settings = DEFAULT_WORKFLOW_CONFIG.copy()
 
-        source_w, source_h, has_real_size = self.get_first_video_size()
+        source_w = 1920
+        source_h = 1080
+        has_real_size = False
+        for path in self.files:
+            info = self.files_info.get(path)
+            if info and getattr(info, "width", 0) and getattr(info, "height", 0):
+                source_w = int(info.width)
+                source_h = int(info.height)
+                has_real_size = True
+                break
+
+        path = self.get_first_video_path()
+        if path != self.crop_preview_source_path or (path and not self.crop_preview_image):
+            self.crop_preview_source_path = path
+            self.crop_preview_image = None
+            if path:
+                self.extract_random_crop_frame(path)
+
         if settings.get("crop_mode") != "manual":
             left = right = top = bottom = 0
         else:
@@ -820,7 +783,18 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         except Exception:
             settings = DEFAULT_WORKFLOW_CONFIG.copy()
 
-        duration, fps, has_real_duration = self.get_first_video_time_context()
+        duration = 60.0
+        fps = 30.0
+        has_real_duration = False
+        for path in self.files:
+            info = self.files_info.get(path)
+            info_duration = float(getattr(info, "duration", 0) or 0)
+            if info_duration > 0:
+                duration = info_duration
+                fps = float(getattr(info, "fps", 0) or 0) or 30.0
+                has_real_duration = True
+                break
+
         start_seconds, end_seconds = self.get_time_trim_seconds(settings, duration, fps)
         keep_seconds = max(duration - start_seconds - end_seconds, 0.0)
 
@@ -1238,17 +1212,17 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def create_console_overlay(self):
         self.console_frame = ctk.CTkFrame(self, fg_color=Colors.bg_dark)
-        
+
         self.console_title = ctk.CTkLabel(self.console_frame, text=t("console.processing"), font=Fonts.heading, text_color=Colors.text_primary)
         self.console_title.pack(pady=(20, 10))
-        
+
         self.progress_bar = ctk.CTkProgressBar(self.console_frame, width=400, height=10, progress_color=Colors.success)
         self.progress_bar.pack(pady=(0, 20))
         self.progress_bar.set(0)
-        
+
         self.console_text = ctk.CTkTextbox(self.console_frame, font=Fonts.mono, text_color="#eeeeee", fg_color="#000000")
         self.console_text.pack(fill="both", expand=True, padx=20, pady=10)
-        
+
         self.btn_close_console = ctk.CTkButton(self.console_frame, text=t("console.close_stop"), fg_color=Colors.error, command=self.stop_or_close_task)
         self.btn_close_console.pack(pady=20)
 
@@ -1303,7 +1277,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not self.files:
             messagebox.showwarning(t("workflow.no_files_title"), t("workflow.no_files"))
             return
-            
+
         settings = self.get_workflow_settings()
         self.app_state["workflow_settings"] = settings
         self.app_state["workflow_scheme_name"] = scheme_value(self.workflow_scheme_var.get())
@@ -1313,27 +1287,27 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         run_settings = settings.copy()
         run_settings["use_gpu"] = self.gpu_var.get()
         run_settings["ffmpeg_path"] = self.get_ffmpeg_path_setting()
-        
+
         commands = []
         durations = []
         for f in self.files:
             try:
                 duration, has_audio, width, height, fps = self.build_file_context(f)
-                
+
                 file_settings = run_settings.copy()
                 file_settings["duration"] = duration
                 file_settings["has_audio"] = has_audio
                 file_settings["source_width"] = width
                 file_settings["source_height"] = height
                 file_settings["source_fps"] = fps
-                
+
                 print(f"Building command for {f} with settings: {file_settings}")
                 cmd = task_instance.build_command(f, file_settings)
                 print(f"Built command: {cmd}")
 
                 commands.append(cmd)
                 durations.append(task_instance.get_output_duration(file_settings))
-                
+
             except Exception as e:
                 print(f"Error building command for {f}: {e}")
                 import traceback
@@ -1343,12 +1317,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             messagebox.showerror(t("workflow.no_commands_title"), t("workflow.no_commands"))
             return
 
-        # Show Console
         self.console_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.console_text.delete("1.0", "end")
         self.btn_close_console.configure(text=t("console.stop"), fg_color=Colors.error)
-        
-        # Run
+
         self.runner.run_commands(commands, durations)
 
     def update_progress(self, percent):
@@ -1381,13 +1353,13 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             else:
                 self.console_text.insert("end", t("console.finished"))
                 self.btn_close_console.configure(text=t("console.close_view"), fg_color=Colors.accent, command=lambda: self.console_frame.place_forget())
-        
+
         self.after(0, _finish)
 
     def load_state(self):
         try:
             if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, 'r') as f:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
                     self.app_state = json.load(f)
             else:
                 self.app_state = {}
@@ -1408,7 +1380,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.app_state["workflow_settings"] = self.get_workflow_settings()
                 if hasattr(self, "workflow_scheme_var"):
                     self.app_state["workflow_scheme_name"] = scheme_value(self.workflow_scheme_var.get())
-            with open(STATE_FILE, 'w') as f:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.app_state, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"Failed to save state: {e}")

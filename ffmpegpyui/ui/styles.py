@@ -10,7 +10,7 @@ class Colors:
     warning = "#e0af68"
     error = "#f7768e"
     border = "#2f334d"
-    
+
 class Fonts:
     heading = ("Segoe UI", 12, "bold")
     subheading = ("Segoe UI", 11, "bold")

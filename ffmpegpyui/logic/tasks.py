@@ -2,20 +2,9 @@ import os
 import random
 
 try:
-    from .ffmpeg_paths import default_ffmpeg_dir, normalize_ffmpeg_dir, resolve_ffmpeg_executable
+    from .ffmpeg_paths import normalize_ffmpeg_dir, resolve_ffmpeg_executable
 except ImportError:
-    from logic.ffmpeg_paths import default_ffmpeg_dir, normalize_ffmpeg_dir, resolve_ffmpeg_executable
-
-# ... existing imports ...
-
-
-
-# ... classes ...
-
-# Update Descriptions
-
-
-# ... add new task to TASKS dict ...
+    from logic.ffmpeg_paths import normalize_ffmpeg_dir, resolve_ffmpeg_executable
 
 
 class TaskParameter:
@@ -39,10 +28,6 @@ class BaseTask:
         BaseTask._ffmpeg_dir = normalize_ffmpeg_dir(ffmpeg_dir)
 
     @classmethod
-    def get_ffmpeg_dir(cls):
-        return BaseTask._ffmpeg_dir or default_ffmpeg_dir()
-
-    @classmethod
     def get_ffmpeg_path(cls, ffmpeg_dir=None):
         return resolve_ffmpeg_executable(ffmpeg_dir or BaseTask._ffmpeg_dir, "ffmpeg")
 
@@ -62,11 +47,6 @@ class BaseTask:
             speed = speed.strip().lower().replace("x", "")
         speed = self._to_float(speed, 1.0)
         return speed if speed > 0 else 1.0
-
-    def should_include_audio(self, settings, default=True):
-        if not settings.get("has_audio", True):
-            return False
-        return bool(settings.get("include_audio", default))
 
     def wants_audio_output(self, settings, default=True):
         return bool(settings.get("include_audio", default))
@@ -161,41 +141,39 @@ class BaseTask:
         if codec == "copy" and requires_reencode:
             codec = default_codec
 
-        # Codec Selection
         if use_gpu and not settings.get("explicit_codec", False):
-            if codec == "libx264": codec = "h264_nvenc"
-            elif codec == "libx265": codec = "hevc_nvenc"
-            # If codec is already nvenc or other, keep it.
+            if codec == "libx264":
+                codec = "h264_nvenc"
+            elif codec == "libx265":
+                codec = "hevc_nvenc"
 
         args.extend(["-c:v", codec])
 
         if codec == "copy":
             return args
 
-        # Encoding Params
         if "nvenc" in codec:
-            # GPU Mapping
-            # Presets: p1 (fastest) to p7 (slowest). Map slow->p6, veryslow->p7, fast->p3
-            nv_preset = "p4" # default medium
-            if preset in ["slow", "slower"]: nv_preset = "p6"
-            elif preset == "veryslow": nv_preset = "p7"
-            elif preset in ["fast", "faster"]: nv_preset = "p3"
-            elif preset in ["superfast", "ultrafast"]: nv_preset = "p1"
-            
+            nv_preset = "p4"
+            if preset in ["slow", "slower"]:
+                nv_preset = "p6"
+            elif preset == "veryslow":
+                nv_preset = "p7"
+            elif preset in ["fast", "faster"]:
+                nv_preset = "p3"
+            elif preset in ["superfast", "ultrafast"]:
+                nv_preset = "p1"
+
             args.extend(["-preset", nv_preset])
             args.extend(["-rc", "vbr", "-cq", str(crf)])
-            args.extend(["-pix_fmt", "yuv420p"]) # NVENC usually likes yuv420p
+            args.extend(["-pix_fmt", "yuv420p"])
         else:
-            # CPU Mapping (libx264/libx265)
             args.extend(["-preset", preset])
             args.extend(["-crf", str(crf)])
             args.extend(["-pix_fmt", "yuv420p"])
 
         return args
 
-# Common Options
 VIDEO_CODECS = ["libx264", "libx265", "libvpx-vp9", "copy"]
-AUDIO_CODECS = ["aac", "libmp3lame", "copy"]
 PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
 AUDIO_BITRATES = ["64k", "128k", "160k", "192k", "256k", "320k"]
 FPS_OPTIONS = ["23.976", "24", "25", "29.97", "30", "60"]
@@ -413,7 +391,7 @@ class AllToBox(BaseTask):
         TaskParameter("crop_w", "Crop Width", 900, param_type="entry", description="Width of the cropped area in center"),
         TaskParameter("crop_h", "Crop Height", 900, param_type="entry", description="Height of the cropped area in center")
     ]
-    
+
     def build_command(self, input_file, settings):
         out = self.decorate_output_path(f"{input_file}_box.mp4", settings)
         w = settings.get("crop_w", 900)
@@ -448,7 +426,7 @@ class StereoMp3ToMono(BaseTask):
     params = [
         TaskParameter("bitrate", "Bitrate", "64k", param_type="choice", options=AUDIO_BITRATES, description="Target bitrate for mono audio")
     ]
-    
+
     def build_command(self, input_file, settings):
         out = f"{input_file}Mono.mp3"
         return [
@@ -465,7 +443,7 @@ class AllToWedGL(BaseTask):
         TaskParameter("preset", "Preset", "slow", param_type="choice", options=PRESETS, description="Encoding efficiency"),
         TaskParameter("codec_v", "Video Codec", "libx264", param_type="choice", options=VIDEO_CODECS, description="Video codec")
     ]
-    
+
     def build_command(self, input_file, settings):
         out = self.decorate_output_path(f"{os.path.splitext(input_file)[0]}_WebGl.mp4", settings)
         speed = self.get_speed_multiplier(settings)
@@ -502,12 +480,12 @@ class FirstFrame(BaseTask):
     params = [
         TaskParameter("quality", "JPG Quality", 2, param_type="slider", min_val=1, max_val=31, description="Q-scale (2=High, 31=Low)")
     ]
-    
+
     def build_command(self, input_file, settings):
         out = f"{input_file}_first_frame.jpg"
         return [
             self.get_ffmpeg_path(), "-i", input_file,
-            "-vf", r"select=eq(n\,0)", "-vsync", "vfr", 
+            "-vf", r"select=eq(n\,0)", "-vsync", "vfr",
             "-q:v", str(int(settings.get("quality", 2))), out
         ]
 
@@ -521,69 +499,28 @@ class RandomFrames(BaseTask):
     def build_command(self, input_file, settings):
         count = int(settings.get("count", 5))
         duration = settings.get("duration", 60.0)
-        if duration <= 1.0: duration = 10.0
-        
-        # Generate N timestamps
+        if duration <= 1.0:
+            duration = 10.0
+
         timestamps = sorted([random.uniform(0, duration) for _ in range(count)])
-        
+
         commands = []
         base_name = os.path.splitext(input_file)[0]
-        
+
         for i, t in enumerate(timestamps):
             out_file = f"{base_name}_rnd_{i+1:03d}.jpg"
-            # ffmpeg -ss <time> -i <input> -vframes 1 -q:v <q> <out>
-            # putting -ss before -i is faster (input seeking)
             cmd = [
-                self.get_ffmpeg_path(), 
+                self.get_ffmpeg_path(),
                 "-ss", f"{t:.3f}",
                 "-i", input_file,
                 "-vframes", "1",
                 "-q:v", str(int(settings.get("quality", 2))),
-                "-y", # Overwrite if exists
+                "-y",
                 out_file
             ]
             commands.append(cmd)
-            
+
         return commands
-
-# Update Descriptions
-WAVToX2.params[0].description = "Amplification factor. 2.0 = Double volume (200%), 0.5 = Half volume (50%)."
-WAVToX2.params[1].description = "Audio limiter threshold. Prevents distortion/clipping when volume is increased. 1.0 = No limit, <1.0 = Softer."
-
-AllToWedGLandSound.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AllToWedGLandSound.params[1].description = "Enable to keep audio. Disable for silent output."
-AllToWedGLandSound.params[2].description = "Target Video Width (pixels). E.g., 1920, 1280, 640."
-AllToWedGLandSound.params[3].description = "Target Video Height (pixels). E.g., 1080, 720, 360."
-AllToWedGLandSound.params[4].description = "Audio volume multiplier (1.0 = Original)."
-AllToWedGLandSound.params[5].description = f"Audio bitrate/quality.\nOptions: {', '.join(AUDIO_BITRATES)}"
-AllToWedGLandSound.params[6].description = f"Encoding speed/compression trade-off.\nSlower = Smaller file size.\nFaster = Bigger file size.\nOptions: {', '.join(PRESETS)}"
-AllToWedGLandSound.params[7].description = "Constant Rate Factor (Quality).\n0 = Lossless\n18 = Visually Lossless\n23 = Default\n51 = Worst\nLower value is BETTER quality."
-
-AllToMov.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AllToMov.params[1].description = "Enable to keep audio. Disable for silent output."
-AllToMov.params[2].description = "H.264 Quality Factor (CRF).\nLower = Better Quality.\n20 is high quality suitable for editing."
-AllToMov.params[3].description = f"AAC Audio Bitrate.\nOptions: {', '.join(AUDIO_BITRATES)}"
-AllToMov.params[4].description = f"Encoding Preset.\nOptions: {', '.join(PRESETS)}"
-
-AviToMp433.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AviToMp433.params[1].description = "Enable to keep audio. Disable for silent output."
-AviToMp433.params[4].description = "CRF (Quality). 28 provides a smaller file size with acceptable quality for previews."
-AviToMp433.params[5].description = f"Target Frame Rate (FPS).\nOptions: {', '.join(FPS_OPTIONS)}"
-AviToMp433.params[6].description = "Preset 'veryslow' squeezes out maximum compression."
-
-AllToMp3.params[0].description = "VBR Quality Level.\n0 = Best (High Bitrate)\n4 = Default\n9 = Worst (Low Bitrate)"
-AllToMp3.params[1].description = "Audio Codec.\nlibmp3lame = Standard MP3\nlibvorbis = Ogg Vorbis (Better quality but less compatible container)"
-
-AviToMp4.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AviToMp4.params[1].description = "Enable to keep audio. Disable for silent output."
-AviToMp4.params[2].description = "Universal MP4 Conversion.\nCRF 22 is a balanced default for web/sharing."
-AviToMp4.params[4].description = f"Video Codec.\nlibx264 = H.264 (Most Compatible)\nlibx265 = H.265 (Better Compression, Newer)\nlibvpx-vp9 = VP9 (WebM)\ncopy = No re-encoding"
-
-AllToBox.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AllToBox.params[1].description = "Enable to keep audio. Disable for silent output."
-
-AllToWedGL.params[0].description = f"Playback speed.\nOptions: {', '.join(SPEED_OPTIONS)}"
-AllToWedGL.params[1].description = "Enable to keep audio. Disable for silent output."
 
 TASKS = {
     "WAVToX2": WAVToX2,

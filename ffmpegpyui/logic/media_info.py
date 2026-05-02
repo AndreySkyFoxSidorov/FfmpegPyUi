@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 import json
-import logging
 
 try:
     from .ffmpeg_paths import normalize_ffmpeg_dir, resolve_ffmpeg_executable
@@ -16,12 +15,11 @@ class MediaInfo:
         self.height = height
         self.v_codec = v_codec
         self.a_codec = a_codec
-        self.size = size # bytes
+        self.size = size
         self.bitrate = bitrate
         self.fps = fps
 
     def __str__(self):
-        # Format: "1080p | h264 | 24MB | 5kbps | 00:02:30"
         parts = []
         if self.width and self.height:
             parts.append(f"{self.width}x{self.height}")
@@ -36,7 +34,7 @@ class MediaInfo:
             m, s = divmod(int(self.duration), 60)
             h, m = divmod(m, 60)
             parts.append(f"{h:02d}:{m:02d}:{s:02d}")
-        
+
         return " | ".join(parts)
 
 class MediaProber:
@@ -52,12 +50,8 @@ class MediaProber:
 
     @staticmethod
     def probe(file_path, ffmpeg_dir=None):
-        """
-        Runs ffprobe and returns a MediaInfo object.
-        """
         ffprobe = MediaProber.get_ffprobe_path(ffmpeg_dir)
         if not os.path.exists(ffprobe) and sys.platform == "win32":
-            # Fallback if not found in local dir, maybe in PATH
             ffprobe = "ffprobe"
 
         cmd = [
@@ -70,7 +64,6 @@ class MediaProber:
         ]
 
         try:
-            # On Windows, hide console
             startupinfo = None
             if sys.platform == "win32":
                 startupinfo = subprocess.STARTUPINFO()
@@ -84,7 +77,7 @@ class MediaProber:
                 startupinfo=startupinfo,
                 check=True
             )
-            
+
             data = json.loads(result.stdout)
             return MediaProber._parse_json(data)
 
@@ -95,8 +88,7 @@ class MediaProber:
     @staticmethod
     def _parse_json(data):
         info = MediaInfo()
-        
-        # Format (Duration, Size, Bitrate)
+
         try:
             if "format" in data:
                 fmt = data["format"]
@@ -108,10 +100,9 @@ class MediaProber:
                         info.bitrate = f"{br/1000000:.1f}Mbps"
                     else:
                         info.bitrate = f"{br/1000:.0f}kbps"
-        except:
+        except (AttributeError, TypeError, ValueError):
             pass
 
-        # Streams
         if "streams" in data:
             for stream in data["streams"]:
                 codec_type = stream.get("codec_type")
@@ -124,7 +115,7 @@ class MediaProber:
                     )
                 elif codec_type == "audio" and not info.a_codec:
                     info.a_codec = stream.get("codec_name", "")
-        
+
         return info
 
     @staticmethod

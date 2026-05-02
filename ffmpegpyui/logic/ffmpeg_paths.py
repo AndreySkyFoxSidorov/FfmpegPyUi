@@ -21,13 +21,9 @@ def normalize_ffmpeg_dir(path):
     return os.path.normpath(value)
 
 
-def _is_windows(platform=None):
-    return (platform or sys.platform).startswith("win")
-
-
 def _executable_name(executable, platform=None):
     name = executable[:-4] if executable.lower().endswith(".exe") else executable
-    if _is_windows(platform):
+    if (platform or sys.platform).startswith("win"):
         return f"{name}.exe"
     return name
 
@@ -35,10 +31,6 @@ def _executable_name(executable, platform=None):
 def _executable_stem(path):
     name = os.path.basename(path).lower()
     return name[:-4] if name.endswith(".exe") else name
-
-
-def _path_fallback(executable):
-    return executable[:-4] if executable.lower().endswith(".exe") else executable
 
 
 def _resolve_from_file(file_path, executable, platform=None):
@@ -54,7 +46,7 @@ def _resolve_from_file(file_path, executable, platform=None):
         if os.path.exists(sibling):
             return sibling
 
-    return _path_fallback(executable)
+    return executable[:-4] if executable.lower().endswith(".exe") else executable
 
 
 def resolve_ffmpeg_executable(ffmpeg_dir=None, executable="ffmpeg", platform=None, fallback_to_path=True):
@@ -75,4 +67,6 @@ def resolve_ffmpeg_executable(ffmpeg_dir=None, executable="ffmpeg", platform=Non
         if os.path.exists(candidate):
             return candidate
 
-    return _path_fallback(executable) if fallback_to_path else candidates[0]
+    if fallback_to_path:
+        return executable[:-4] if executable.lower().endswith(".exe") else executable
+    return candidates[0]
