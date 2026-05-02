@@ -163,7 +163,7 @@ By default, the app looks for FFmpeg in:
 
 That folder is intentionally ignored by Git because FFmpeg binaries are large and platform-specific.
 
-On Windows, this layout works well:
+On startup, the app checks for this local layout first:
 
 ```text
 ffmpeg/
@@ -172,9 +172,61 @@ ffmpeg/
     ffprobe.exe
 ```
 
+If the local pair is missing, the app checks system `ffmpeg` and `ffprobe` from `PATH`. If both local and system FFmpeg are unavailable, it downloads a stable FFmpeg build into the selected FFmpeg folder automatically.
+
+The automatic downloader targets the latest stable FFmpeg release line available from the BtbN release assets. As of May 2, 2026, the current stable FFmpeg release is `8.1`.
+
+Automatic downloads are supported for:
+
+- Windows x64 and Windows ARM64: BtbN `gpl-shared` `.zip` builds.
+- Linux x64 and Linux ARM64: BtbN `gpl-shared` `.tar.xz` builds.
+- macOS Apple Silicon: Martin Riedl FFmpeg and FFprobe release `.zip` builds.
+
 You can also install FFmpeg somewhere else and choose that folder inside the app.
 
-On Linux and macOS, a system FFmpeg from `PATH` can be used. If needed, select the folder manually in the sidebar.
+Reference pages:
+
+- Official FFmpeg downloads and release notes: <https://ffmpeg.org/download.html>
+- BtbN Windows/Linux builds: <https://github.com/BtbN/FFmpeg-Builds>
+- Martin Riedl macOS Apple Silicon builds: <https://ffmpeg.martin-riedl.de/>
+
+Manual download examples for FFmpeg `8.1`:
+
+### Windows x64
+
+```powershell
+$url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
+$zip = "$env:TEMP\ffmpeg-n8.1.zip"
+$extract = "$env:TEMP\ffmpeg-n8.1"
+Invoke-WebRequest $url -OutFile $zip
+Expand-Archive $zip -DestinationPath $extract -Force
+New-Item -ItemType Directory -Force .\ffmpeg | Out-Null
+Copy-Item "$extract\ffmpeg-n8.1-latest-win64-gpl-shared-8.1\*" .\ffmpeg -Recurse -Force
+```
+
+### Linux x64
+
+```bash
+url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz"
+tmp="$(mktemp -d)"
+curl -L "$url" -o "$tmp/ffmpeg.tar.xz"
+tar -xf "$tmp/ffmpeg.tar.xz" -C "$tmp"
+mkdir -p ./ffmpeg
+cp -a "$tmp/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1/." ./ffmpeg/
+```
+
+### macOS Apple Silicon
+
+```bash
+tmp="$(mktemp -d)"
+curl -L "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$tmp/ffmpeg.zip"
+curl -L "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$tmp/ffprobe.zip"
+mkdir -p ./ffmpeg/bin
+unzip -j "$tmp/ffmpeg.zip" -d ./ffmpeg/bin
+unzip -j "$tmp/ffprobe.zip" -d ./ffmpeg/bin
+chmod +x ./ffmpeg/bin/ffmpeg ./ffmpeg/bin/ffprobe
+xattr -dr com.apple.quarantine ./ffmpeg/bin/ffmpeg ./ffmpeg/bin/ffprobe 2>/dev/null || true
+```
 
 ## Installation
 

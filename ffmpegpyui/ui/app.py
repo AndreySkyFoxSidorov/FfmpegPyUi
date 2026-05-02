@@ -29,6 +29,7 @@ from .localization import (
 )
 from logic.scanner import scan_path
 from logic.ffmpeg_runner import FfmpegRunner
+from logic.ffmpeg_installer import ensure_ffmpeg_available, should_download_ffmpeg
 from logic.ffmpeg_paths import normalize_ffmpeg_dir
 from logic.input_paths import expand_input_paths
 from logic.media_info import MediaProber
@@ -165,6 +166,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.time_trim_end_loading = False
         self.time_trim_geometry = None
         self.time_trim_drag_handle = None
+        self.ffmpeg_installing = False
 
         self.load_state()
         self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
@@ -202,6 +204,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         if files:
             self.process_input_paths(files)
+        self.start_ffmpeg_startup_check()
 
     def drop(self, event):
         if event.data:
@@ -242,6 +245,67 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def open_ffmpeg_download(self, _event=None):
         webbrowser.open_new_tab(FFMPEG_DOWNLOAD_URL)
+
+    def start_ffmpeg_startup_check(self):
+        ffmpeg_dir = self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
+        if should_download_ffmpeg(ffmpeg_dir):
+            self.ffmpeg_installing = True
+            self.show_ffmpeg_download_console(ffmpeg_dir)
+            threading.Thread(
+                target=self.download_startup_ffmpeg,
+                args=(ffmpeg_dir,),
+                daemon=True,
+            ).start()
+
+    def show_ffmpeg_download_console(self, ffmpeg_dir):
+        self.console_title.configure(text="Downloading FFmpeg")
+        self.progress_bar.set(0)
+        self.console_text.delete("1.0", "end")
+        self.console_text.insert(
+            "end",
+            f"FFmpeg was not found in PATH or in this folder:\n{ffmpeg_dir}\n\n",
+        )
+        self.btn_close_console.configure(
+            text="Please wait",
+            fg_color=Colors.accent,
+            state="disabled",
+        )
+        self.console_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def download_startup_ffmpeg(self, ffmpeg_dir):
+        try:
+            installed_dir = ensure_ffmpeg_available(ffmpeg_dir, log_callback=self.update_console)
+            self.after(0, lambda: self.finish_ffmpeg_download(installed_dir))
+        except Exception as error:
+            self.after(0, lambda error=error: self.fail_ffmpeg_download(error))
+
+    def finish_ffmpeg_download(self, installed_dir):
+        self.ffmpeg_installing = False
+        self.apply_ffmpeg_path_setting(installed_dir)
+        self.progress_bar.set(1)
+        self.console_title.configure(text="FFmpeg ready")
+        self.console_text.insert("end", f"\nFFmpeg is ready in:\n{installed_dir}\n")
+        self.console_text.see("end")
+        self.btn_close_console.configure(
+            text=t("console.close_view"),
+            fg_color=Colors.success,
+            state="normal",
+            command=lambda: self.console_frame.place_forget(),
+        )
+        self.update_command_preview()
+
+    def fail_ffmpeg_download(self, error):
+        self.ffmpeg_installing = False
+        self.progress_bar.set(0)
+        self.console_title.configure(text="FFmpeg download failed")
+        self.console_text.insert("end", f"\nCould not download FFmpeg automatically:\n{error}\n")
+        self.console_text.see("end")
+        self.btn_close_console.configure(
+            text=t("console.close_view"),
+            fg_color=Colors.error,
+            state="normal",
+            command=lambda: self.console_frame.place_forget(),
+        )
 
     def create_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=320, corner_radius=0, fg_color=Colors.bg_card)
@@ -1875,6 +1939,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.update_command_preview()
 
     def run_workflow(self):
+        if self.ffmpeg_installing:
+            messagebox.showwarning("FFmpeg download", "FFmpeg is downloading. Please wait until it finishes.")
+            return
+
         if not self.files:
             messagebox.showwarning(t("workflow.no_files_title"), t("workflow.no_files"))
             return

@@ -8,6 +8,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ffmpegpyui.logic.media_info import MediaProber, MediaInfo
 from ffmpegpyui.logic.ffmpeg_runner import FfmpegRunner
+from ffmpegpyui.logic.ffmpeg_installer import (
+    FFMPEG_STABLE_VERSION,
+    ffmpeg_downloads_for_platform,
+    local_ffmpeg_available,
+    should_download_ffmpeg,
+)
 from ffmpegpyui.logic.input_paths import expand_input_paths
 from ffmpegpyui.logic.ffmpeg_paths import resolve_ffmpeg_executable
 from ffmpegpyui.logic.tasks import BaseTask, AviToMp4, AllToWedGL
@@ -503,6 +509,103 @@ class TestLogic(unittest.TestCase):
                 resolve_ffmpeg_executable(ffmpeg_path, "ffprobe", platform="win32"),
                 ffprobe_path,
             )
+
+    def test_local_ffmpeg_available_requires_ffmpeg_and_ffprobe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_dir = os.path.join(tmpdir, "bin")
+            os.makedirs(bin_dir)
+            ffmpeg_path = os.path.join(bin_dir, "ffmpeg.exe")
+            ffprobe_path = os.path.join(bin_dir, "ffprobe.exe")
+            open(ffmpeg_path, "w").close()
+            open(ffprobe_path, "w").close()
+
+            self.assertTrue(local_ffmpeg_available(tmpdir, platform="win32"))
+
+            os.remove(ffprobe_path)
+            self.assertFalse(local_ffmpeg_available(tmpdir, platform="win32"))
+
+    def test_ffmpeg_download_is_needed_only_without_local_or_system_pair(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertTrue(
+                should_download_ffmpeg(
+                    tmpdir,
+                    platform="linux",
+                    system_checker=lambda: False,
+                )
+            )
+            self.assertFalse(
+                should_download_ffmpeg(
+                    tmpdir,
+                    platform="linux",
+                    system_checker=lambda: True,
+                )
+            )
+
+            bin_dir = os.path.join(tmpdir, "bin")
+            os.makedirs(bin_dir)
+            open(os.path.join(bin_dir, "ffmpeg"), "w").close()
+            open(os.path.join(bin_dir, "ffprobe"), "w").close()
+
+            self.assertFalse(
+                should_download_ffmpeg(
+                    tmpdir,
+                    platform="linux",
+                    system_checker=lambda: False,
+                )
+            )
+
+    def test_ffmpeg_download_selects_latest_stable_btbn_asset(self):
+        assets = [
+            {
+                "name": "ffmpeg-master-latest-win64-gpl-shared.zip",
+                "browser_download_url": "https://example.com/master.zip",
+            },
+            {
+                "name": "ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip",
+                "browser_download_url": "https://example.com/7.1.zip",
+            },
+            {
+                "name": "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip",
+                "browser_download_url": "https://example.com/8.1.zip",
+            },
+        ]
+
+        download = ffmpeg_downloads_for_platform(
+            runtime_platform="win32",
+            machine="AMD64",
+            release_assets=assets,
+        )[0]
+
+        self.assertEqual(download.name, "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip")
+        self.assertEqual(download.url, "https://example.com/8.1.zip")
+
+    def test_ffmpeg_download_falls_back_to_configured_stable_version(self):
+        download = ffmpeg_downloads_for_platform(
+            runtime_platform="linux",
+            machine="x86_64",
+            release_assets=[],
+        )[0]
+
+        self.assertEqual(
+            download.name,
+            f"ffmpeg-n{FFMPEG_STABLE_VERSION}-latest-linux64-gpl-shared-{FFMPEG_STABLE_VERSION}.tar.xz",
+        )
+
+    def test_ffmpeg_download_uses_apple_silicon_macos_builds(self):
+        downloads = ffmpeg_downloads_for_platform(
+            runtime_platform="darwin",
+            machine="arm64",
+            release_assets=[],
+        )
+
+        self.assertEqual([download.name for download in downloads], ["ffmpeg.zip", "ffprobe.zip"])
+        self.assertEqual(
+            [download.url for download in downloads],
+            [
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip",
+            ],
+        )
 
     def test_workflow_manual_crop_left(self):
         task = WorkflowVideoTask()
