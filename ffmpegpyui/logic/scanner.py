@@ -2,6 +2,7 @@ import os
 
 SUPPORTED_EXTENSIONS = {
     ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpeg", ".mpg",
+    ".gif",
     ".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg",
 }
 

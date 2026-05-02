@@ -5,6 +5,7 @@ import json
 import random
 import subprocess
 import sys
+import threading
 import webbrowser
 from tkinter import Canvas, PhotoImage, filedialog, messagebox, simpledialog
 from .styles import Colors, Fonts, Metrics
@@ -38,13 +39,20 @@ from logic.workflow import (
     WorkflowVideoTask,
     get_builtin_scheme,
     is_audio_output_format,
+    is_gif_output_format,
     normalize_workflow_config,
+    selected_audio_filters,
+    selected_video_filters,
 )
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
 DEFAULT_FFMPEG_PATH = "./ffmpeg"
 FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
 AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS = {
+    "gif_source_mode",
+    "gif_width",
+    "gif_fps",
+    "gif_dither",
     "resolution_mode",
     "custom_width",
     "custom_height",
@@ -57,13 +65,64 @@ AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS = {
     "crop_top",
     "crop_bottom",
     "fps_mode",
-    "speed",
     "audio_mode",
+    "video_filter_1",
+    "video_filter_2",
+    "video_filter_3",
+    "video_eq_brightness",
+    "video_eq_contrast",
+    "video_eq_saturation",
+    "video_denoise_strength",
+    "video_sharpen_strength",
+    "video_text",
+    "advanced_video_filters",
 }
+GIF_ONLY_FIELDS = {"gif_source_mode", "gif_width", "gif_fps", "gif_dither"}
 CROP_PARAMETER_FIELDS = {"crop_left", "crop_right", "crop_top", "crop_bottom"}
 RESOLUTION_PARAMETER_FIELDS = {"custom_width", "custom_height"}
 TRIM_SECONDS_FIELDS = {"trim_start_seconds", "trim_end_seconds"}
 TRIM_FRAME_FIELDS = {"trim_start_frames", "trim_end_frames"}
+VIDEO_EQ_FIELDS = {"video_eq_brightness", "video_eq_contrast", "video_eq_saturation"}
+VIDEO_DENOISE_FIELDS = {"video_denoise_strength"}
+VIDEO_SHARPEN_FIELDS = {"video_sharpen_strength"}
+VIDEO_TEXT_FIELDS = {"video_text"}
+VIDEO_FILTER_FIELDS = {
+    "resolution_mode",
+    "custom_width",
+    "custom_height",
+    "quality_profile",
+    "encoding_speed",
+    "video_codec",
+    "crop_mode",
+    "crop_left",
+    "crop_right",
+    "crop_top",
+    "crop_bottom",
+    "fps_mode",
+    "video_filter_1",
+    "video_filter_2",
+    "video_filter_3",
+    "video_eq_brightness",
+    "video_eq_contrast",
+    "video_eq_saturation",
+    "video_denoise_strength",
+    "video_sharpen_strength",
+    "video_text",
+    "advanced_video_filters",
+}
+AUDIO_HIGHPASS_FIELDS = {"audio_highpass_hz"}
+AUDIO_LOWPASS_FIELDS = {"audio_lowpass_hz"}
+AUDIO_FADE_FIELDS = {"audio_fade_seconds"}
+AUDIO_FILTER_FIELDS = {
+    "audio_volume",
+    "audio_filter_1",
+    "audio_filter_2",
+    "audio_filter_3",
+    "audio_highpass_hz",
+    "audio_lowpass_hz",
+    "audio_fade_seconds",
+    "advanced_audio_filters",
+}
 
 class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, files=None):
@@ -82,6 +141,9 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.crop_preview_label = None
         self.crop_preview_image = None
         self.crop_preview_source_path = None
+        self.crop_preview_request_id = 0
+        self.crop_preview_loading = False
+        self.crop_preview_error_path = None
         self.crop_preview_geometry = None
         self.crop_drag_handle = None
         self.time_trim_canvas = None
@@ -137,6 +199,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.app_state["ffmpeg_path"] = value
         self.apply_ffmpeg_path_setting(value)
         self.save_state()
+        self.update_command_preview()
 
     def choose_ffmpeg_path(self):
         initial_dir = self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
@@ -308,6 +371,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.btn_save_scheme.configure(text=t("workflow.save_scheme"))
             self.btn_delete_scheme.configure(text=t("workflow.delete_scheme"))
             self.btn_reset_scheme.configure(text=t("workflow.reset_scheme"))
+            self.command_preview_title.configure(text=t("workflow.command_preview_title"))
             self.btn_run_workflow.configure(text=t("workflow.run"))
 
             selected_scheme = selected_scheme or scheme_value(self.workflow_scheme_var.get())
@@ -343,6 +407,34 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.scroll_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent")
         self.scroll_frame.grid(row=3, column=0, sticky="nsew", pady=(14, 12))
 
+        self.command_preview_frame = ctk.CTkFrame(
+            self.main_frame,
+            fg_color=Colors.bg_card,
+            corner_radius=Metrics.radius,
+            border_width=1,
+            border_color=Colors.border,
+        )
+        self.command_preview_frame.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+        self.command_preview_frame.grid_columnconfigure(0, weight=1)
+
+        self.command_preview_title = ctk.CTkLabel(
+            self.command_preview_frame,
+            text=t("workflow.command_preview_title"),
+            font=Fonts.subheading,
+            text_color=Colors.text_primary,
+            anchor="w",
+        )
+        self.command_preview_title.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="ew")
+
+        self.command_preview_text = ctk.CTkTextbox(
+            self.command_preview_frame,
+            height=72,
+            font=Fonts.mono,
+            text_color=Colors.text_secondary,
+            fg_color=Colors.bg_dark,
+        )
+        self.command_preview_text.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
+
         initial_config = self.app_state.get("workflow_settings") or get_builtin_scheme(DEFAULT_BUILTIN_SCHEME)
         self.create_workflow_form(normalize_workflow_config(initial_config))
 
@@ -355,7 +447,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             font=("Segoe UI", 14, "bold"),
             command=self.run_workflow
         )
-        self.btn_run_workflow.grid(row=4, column=0, sticky="ew")
+        self.btn_run_workflow.grid(row=5, column=0, sticky="ew")
 
     def create_scheme_bar(self):
         bar = ctk.CTkFrame(self.main_frame, fg_color=Colors.bg_card, corner_radius=Metrics.radius,
@@ -405,7 +497,6 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.workflow_value_labels.clear()
         self.crop_canvas = None
         self.crop_preview_label = None
-        self.crop_preview_image = None
         self.crop_preview_geometry = None
         self.crop_drag_handle = None
         self.time_trim_canvas = None
@@ -456,20 +547,47 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.update_crop_preview()
         self.update_time_trim_preview()
+        self.update_command_preview()
 
     def get_workflow_visibility_state(self, config):
         config = normalize_workflow_config(config)
         return (
             is_audio_output_format(config["output_container"]),
+            is_gif_output_format(config["output_container"]),
+            config["gif_source_mode"],
             config["resolution_mode"],
             config["crop_mode"],
             config["trim_mode"],
+            config["audio_mode"],
+            config["video_filter_1"],
+            config["video_filter_2"],
+            config["video_filter_3"],
+            config["audio_filter_1"],
+            config["audio_filter_2"],
+            config["audio_filter_3"],
         )
 
     def is_workflow_field_visible(self, spec, config):
         config = normalize_workflow_config(config)
         key = spec["key"]
+        video_filters = selected_video_filters(config)
+        audio_filters = selected_audio_filters(config)
+        if key in GIF_ONLY_FIELDS and not is_gif_output_format(config["output_container"]):
+            return False
         if is_audio_output_format(config["output_container"]) and key in AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS:
+            return False
+        if is_gif_output_format(config["output_container"]) and key in {"quality_profile", "encoding_speed", "video_codec", "fps_mode", "audio_mode", "audio_quality"}:
+            return False
+        if is_gif_output_format(config["output_container"]) and config["gif_source_mode"] == "audio_waveform" and key in VIDEO_FILTER_FIELDS:
+            return False
+        if is_gif_output_format(config["output_container"]) and config["gif_source_mode"] != "audio_waveform" and key in AUDIO_FILTER_FIELDS:
+            return False
+        if (
+            config["audio_mode"] == "mute"
+            and key in AUDIO_FILTER_FIELDS
+            and not is_audio_output_format(config["output_container"])
+            and not (is_gif_output_format(config["output_container"]) and config["gif_source_mode"] == "audio_waveform")
+        ):
             return False
         if key in RESOLUTION_PARAMETER_FIELDS and config["resolution_mode"] != "custom":
             return False
@@ -478,6 +596,20 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if key in TRIM_SECONDS_FIELDS and config["trim_mode"] != "seconds":
             return False
         if key in TRIM_FRAME_FIELDS and config["trim_mode"] != "frames":
+            return False
+        if key in VIDEO_EQ_FIELDS and "eq" not in video_filters:
+            return False
+        if key in VIDEO_DENOISE_FIELDS and "denoise" not in video_filters:
+            return False
+        if key in VIDEO_SHARPEN_FIELDS and "sharpen" not in video_filters:
+            return False
+        if key in VIDEO_TEXT_FIELDS and "drawtext" not in video_filters:
+            return False
+        if key in AUDIO_HIGHPASS_FIELDS and "highpass" not in audio_filters:
+            return False
+        if key in AUDIO_LOWPASS_FIELDS and "lowpass" not in audio_filters:
+            return False
+        if key in AUDIO_FADE_FIELDS and "afade" not in audio_filters:
             return False
         return True
 
@@ -551,6 +683,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
         self.update_crop_preview()
         self.update_time_trim_preview()
+        self.update_command_preview()
 
     def format_slider_value(self, value):
         value = float(value)
@@ -624,18 +757,45 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def reload_crop_preview_frame(self):
         path = self.get_first_video_path()
         if path:
-            self.crop_preview_source_path = path
-            self.extract_random_crop_frame(path)
+            self.request_crop_preview_frame(path, force=True)
         self.update_crop_preview()
 
-    def extract_random_crop_frame(self, path):
+    def request_crop_preview_frame(self, path, force=False):
+        if not path:
+            self.crop_preview_request_id += 1
+            self.crop_preview_source_path = None
+            self.crop_preview_image = None
+            self.crop_preview_loading = False
+            self.crop_preview_error_path = None
+        else:
+            if not force and path == self.crop_preview_source_path and self.crop_preview_image:
+                return
+            if not force and path == self.crop_preview_source_path and self.crop_preview_loading:
+                return
+            if not force and path == self.crop_preview_error_path:
+                return
+
+            self.crop_preview_request_id += 1
+            request_id = self.crop_preview_request_id
+            self.crop_preview_source_path = path
+            self.crop_preview_image = None
+            self.crop_preview_loading = True
+            self.crop_preview_error_path = None
+            thread = threading.Thread(
+                target=self.extract_random_crop_frame,
+                args=(request_id, path),
+                daemon=True,
+            )
+            thread.start()
+
+    def extract_random_crop_frame(self, request_id, path):
         info = self.files_info.get(path)
         duration = float(getattr(info, "duration", 0) or 0)
         timestamp = random.uniform(0, max(duration - 0.2, 0.0)) if duration > 0.3 else 0
 
         preview_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "preview_cache")
         os.makedirs(preview_dir, exist_ok=True)
-        output_path = os.path.join(preview_dir, "crop_preview.png")
+        output_path = os.path.join(preview_dir, f"crop_preview_{request_id}.png")
 
         cmd = [
             WorkflowVideoTask.get_ffmpeg_path(self.get_ffmpeg_path_setting()),
@@ -661,10 +821,31 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 timeout=20,
                 check=True
             )
-            self.crop_preview_image = PhotoImage(file=output_path)
+            success = True
         except Exception as e:
             print(f"Failed to extract crop preview frame: {e}")
-            self.crop_preview_image = None
+            success = False
+
+        def apply_crop_preview_frame():
+            if request_id == self.crop_preview_request_id:
+                self.crop_preview_loading = False
+                if success and os.path.exists(output_path):
+                    try:
+                        self.crop_preview_image = PhotoImage(file=output_path)
+                        self.crop_preview_error_path = None
+                    except Exception as e:
+                        print(f"Failed to load crop preview frame: {e}")
+                        self.crop_preview_image = None
+                        self.crop_preview_error_path = path
+                else:
+                    self.crop_preview_image = None
+                    self.crop_preview_error_path = path
+                self.update_crop_preview()
+
+        try:
+            self.after(0, apply_crop_preview_frame)
+        except Exception as e:
+            print(f"Failed to schedule crop preview update: {e}")
 
     def update_crop_preview(self):
         if not self.crop_canvas or not self.crop_preview_label:
@@ -687,11 +868,10 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 break
 
         path = self.get_first_video_path()
-        if path != self.crop_preview_source_path or (path and not self.crop_preview_image):
-            self.crop_preview_source_path = path
-            self.crop_preview_image = None
-            if path:
-                self.extract_random_crop_frame(path)
+        if path:
+            self.request_crop_preview_frame(path)
+        else:
+            self.request_crop_preview_frame(None)
 
         if settings.get("crop_mode") != "manual":
             left = right = top = bottom = 0
@@ -772,6 +952,8 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         if not has_real_size:
             info_text = f"{t('crop.preview_no_file')}\n{info_text}"
+        if self.crop_preview_loading:
+            info_text = f"{t('crop.preview_loading')}\n{info_text}"
         self.crop_preview_label.configure(text=info_text)
 
     def update_time_trim_preview(self):
@@ -1183,6 +1365,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.workflow_config_snapshot = config
         self.update_crop_preview()
         self.update_time_trim_preview()
+        self.update_command_preview()
 
     def build_file_context(self, path):
         duration = 0
@@ -1210,6 +1393,39 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 has_audio = bool(getattr(info, "a_codec", ""))
         return duration, has_audio, width, height, fps
 
+    def update_command_preview(self):
+        if not hasattr(self, "command_preview_text"):
+            return
+
+        try:
+            settings = self.get_workflow_settings()
+            run_settings = settings.copy()
+            run_settings["use_gpu"] = self.gpu_var.get() if hasattr(self, "gpu_var") else False
+            run_settings["ffmpeg_path"] = self.get_ffmpeg_path_setting()
+
+            input_file = self.files[0] if self.files else "input.ext"
+            if self.files:
+                duration, has_audio, width, height, fps = self.build_file_context(input_file)
+            else:
+                duration = 10
+                has_audio = True
+                width = 1920
+                height = 1080
+                fps = 30
+
+            run_settings["duration"] = duration
+            run_settings["has_audio"] = has_audio
+            run_settings["source_width"] = width
+            run_settings["source_height"] = height
+            run_settings["source_fps"] = fps
+            cmd = WorkflowVideoTask().build_command(input_file, run_settings)
+            text = subprocess.list2cmdline(cmd)
+        except Exception as e:
+            text = t("workflow.command_preview_error", error=e)
+
+        self.command_preview_text.delete("1.0", "end")
+        self.command_preview_text.insert("1.0", text)
+
     def create_console_overlay(self):
         self.console_frame = ctk.CTkFrame(self, fg_color=Colors.bg_dark)
 
@@ -1233,6 +1449,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if added:
             self.update_crop_preview()
             self.update_time_trim_preview()
+            self.update_command_preview()
         return added
 
     def process_input_path(self, path, update_previews=True):
@@ -1253,6 +1470,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if update_previews and added:
             self.update_crop_preview()
             self.update_time_trim_preview()
+            self.update_command_preview()
         return added
 
     def add_files_dialog(self):
@@ -1272,6 +1490,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.file_list.remove_file(path)
             self.update_crop_preview()
             self.update_time_trim_preview()
+            self.update_command_preview()
 
     def run_workflow(self):
         if not self.files:

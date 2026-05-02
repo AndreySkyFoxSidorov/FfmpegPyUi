@@ -11,6 +11,10 @@ DEFAULT_BUILTIN_SCHEME = "MP4 для отправки"
 
 DEFAULT_WORKFLOW_CONFIG = {
     "output_container": "mp4",
+    "gif_source_mode": "auto",
+    "gif_width": 640,
+    "gif_fps": 15,
+    "gif_dither": "sierra2_4a",
     "resolution_mode": "original",
     "custom_width": 1280,
     "custom_height": 720,
@@ -32,6 +36,23 @@ DEFAULT_WORKFLOW_CONFIG = {
     "audio_mode": "keep_or_silent",
     "audio_quality": "normal",
     "audio_volume": 1.0,
+    "video_filter_1": "none",
+    "video_filter_2": "none",
+    "video_filter_3": "none",
+    "video_eq_brightness": 0.0,
+    "video_eq_contrast": 1.0,
+    "video_eq_saturation": 1.0,
+    "video_denoise_strength": 3.0,
+    "video_sharpen_strength": 1.0,
+    "video_text": "",
+    "audio_filter_1": "none",
+    "audio_filter_2": "none",
+    "audio_filter_3": "none",
+    "audio_highpass_hz": 80,
+    "audio_lowpass_hz": 16000,
+    "audio_fade_seconds": 1.0,
+    "advanced_video_filters": "",
+    "advanced_audio_filters": "",
     "output_suffix": "processed",
 }
 
@@ -82,6 +103,42 @@ BUILTIN_SCHEMES = {
         "audio_quality": "high",
         "output_suffix": "edit",
     },
+    "WebM для сайта": {
+        **DEFAULT_WORKFLOW_CONFIG,
+        "output_container": "webm",
+        "video_codec": "libvpx-vp9",
+        "quality_profile": "balanced",
+        "output_suffix": "webm",
+    },
+    "GIF из видео": {
+        **DEFAULT_WORKFLOW_CONFIG,
+        "output_container": "gif",
+        "gif_source_mode": "video_frames",
+        "gif_width": 640,
+        "gif_fps": 15,
+        "audio_mode": "mute",
+        "output_suffix": "gif",
+    },
+    "GIF из аудио": {
+        **DEFAULT_WORKFLOW_CONFIG,
+        "output_container": "gif",
+        "gif_source_mode": "audio_waveform",
+        "gif_width": 640,
+        "gif_fps": 15,
+        "output_suffix": "wave",
+    },
+    "MP3 аудио": {
+        **DEFAULT_WORKFLOW_CONFIG,
+        "output_container": "mp3",
+        "audio_quality": "high",
+        "output_suffix": "mp3",
+    },
+    "WAV аудио": {
+        **DEFAULT_WORKFLOW_CONFIG,
+        "output_container": "wav",
+        "audio_quality": "high",
+        "output_suffix": "wav",
+    },
 }
 
 QUALITY_PROFILES = {
@@ -104,13 +161,38 @@ VIDEO_CODECS = {
     "h264_nvenc": "h264_nvenc",
     "hevc_nvenc": "hevc_nvenc",
     "libvpx-vp9": "libvpx-vp9",
+    "libaom-av1": "libaom-av1",
     "copy": "copy",
 }
 
+GIF_SOURCE_MODES = {"auto", "video_frames", "audio_waveform"}
+GIF_DITHER_MODES = {"sierra2_4a", "bayer", "none"}
 RESOLUTION_MODES = {"original", "fit_1080", "fit_720", "square_720", "custom"}
 CROP_MODES = {"none", "manual"}
 TRIM_MODES = {"none", "seconds", "frames"}
 FPS_MODES = {"source", "24", "30", "60"}
+VIDEO_FILTER_MODES = {
+    "none",
+    "hflip",
+    "vflip",
+    "rotate_90",
+    "grayscale",
+    "eq",
+    "denoise",
+    "sharpen",
+    "deinterlace",
+    "pad_square",
+    "drawtext",
+}
+AUDIO_FILTER_MODES = {
+    "none",
+    "loudnorm",
+    "highpass",
+    "lowpass",
+    "acompressor",
+    "afade",
+    "silenceremove",
+}
 
 AUDIO_BITRATES = {
     "compact": "96k",
@@ -121,12 +203,23 @@ AUDIO_BITRATES = {
 OUTPUT_EXTENSIONS = {
     "mp4": ".mp4",
     "mov": ".mov",
+    "mkv": ".mkv",
+    "webm": ".webm",
     "mp3": ".mp3",
+    "wav": ".wav",
+    "aac": ".aac",
+    "flac": ".flac",
+    "ogg": ".ogg",
+    "gif": ".gif",
 }
 
-AUDIO_OUTPUT_FORMATS = {"mp3"}
+AUDIO_OUTPUT_FORMATS = {"mp3", "wav", "aac", "flac", "ogg"}
 AUDIO_OUTPUT_CODECS = {
     "mp3": "libmp3lame",
+    "wav": "pcm_s16le",
+    "aac": "aac",
+    "flac": "flac",
+    "ogg": "libvorbis",
 }
 
 
@@ -142,10 +235,15 @@ def normalize_workflow_config(config):
         normalized["speed"] = DEFAULT_WORKFLOW_CONFIG["speed"]
     if normalized.get("output_container") not in OUTPUT_EXTENSIONS:
         normalized["output_container"] = DEFAULT_WORKFLOW_CONFIG["output_container"]
+    if normalized.get("gif_source_mode") not in GIF_SOURCE_MODES:
+        normalized["gif_source_mode"] = DEFAULT_WORKFLOW_CONFIG["gif_source_mode"]
+    if normalized.get("gif_dither") not in GIF_DITHER_MODES:
+        normalized["gif_dither"] = DEFAULT_WORKFLOW_CONFIG["gif_dither"]
     if normalized.get("quality_profile") not in QUALITY_PROFILES:
         normalized["quality_profile"] = DEFAULT_WORKFLOW_CONFIG["quality_profile"]
     if normalized.get("encoding_speed") not in ENCODING_SPEEDS:
         normalized["encoding_speed"] = DEFAULT_WORKFLOW_CONFIG["encoding_speed"]
+
     raw_config = config or {}
     if "video_codec" not in raw_config and raw_config.get("encoder_profile") == "smaller_file":
         normalized["video_codec"] = "libx265"
@@ -153,6 +251,11 @@ def normalize_workflow_config(config):
         normalized["video_codec"] = "copy"
     if normalized.get("video_codec") not in VIDEO_CODECS:
         normalized["video_codec"] = DEFAULT_WORKFLOW_CONFIG["video_codec"]
+    if normalized["output_container"] == "webm" and normalized["video_codec"] in {"libx264", "libx265", "h264_nvenc", "hevc_nvenc"}:
+        normalized["video_codec"] = "libvpx-vp9"
+    if normalized["output_container"] == "gif":
+        normalized["audio_mode"] = "mute"
+
     if normalized.get("audio_quality") not in AUDIO_BITRATES:
         normalized["audio_quality"] = DEFAULT_WORKFLOW_CONFIG["audio_quality"]
     if normalized.get("audio_mode") not in ("keep_or_silent", "mute"):
@@ -163,43 +266,66 @@ def normalize_workflow_config(config):
         normalized["crop_mode"] = DEFAULT_WORKFLOW_CONFIG["crop_mode"]
     if normalized.get("trim_mode") not in TRIM_MODES:
         normalized["trim_mode"] = DEFAULT_WORKFLOW_CONFIG["trim_mode"]
+
     normalized["fps_mode"] = str(normalized.get("fps_mode", DEFAULT_WORKFLOW_CONFIG["fps_mode"]))
     if normalized["fps_mode"] not in FPS_MODES:
         normalized["fps_mode"] = DEFAULT_WORKFLOW_CONFIG["fps_mode"]
+    for key in ("video_filter_1", "video_filter_2", "video_filter_3"):
+        if normalized.get(key) not in VIDEO_FILTER_MODES:
+            normalized[key] = DEFAULT_WORKFLOW_CONFIG[key]
+    for key in ("audio_filter_1", "audio_filter_2", "audio_filter_3"):
+        if normalized.get(key) not in AUDIO_FILTER_MODES:
+            normalized[key] = DEFAULT_WORKFLOW_CONFIG[key]
 
+    normalized["gif_width"] = _positive_int(normalized.get("gif_width"), DEFAULT_WORKFLOW_CONFIG["gif_width"])
+    normalized["gif_fps"] = _positive_int(normalized.get("gif_fps"), DEFAULT_WORKFLOW_CONFIG["gif_fps"])
     normalized["custom_width"] = _positive_int(normalized.get("custom_width"), DEFAULT_WORKFLOW_CONFIG["custom_width"])
     normalized["custom_height"] = _positive_int(normalized.get("custom_height"), DEFAULT_WORKFLOW_CONFIG["custom_height"])
     normalized["crop_left"] = _non_negative_int(normalized.get("crop_left"), DEFAULT_WORKFLOW_CONFIG["crop_left"])
     normalized["crop_right"] = _non_negative_int(normalized.get("crop_right"), DEFAULT_WORKFLOW_CONFIG["crop_right"])
     normalized["crop_top"] = _non_negative_int(normalized.get("crop_top"), DEFAULT_WORKFLOW_CONFIG["crop_top"])
     normalized["crop_bottom"] = _non_negative_int(normalized.get("crop_bottom"), DEFAULT_WORKFLOW_CONFIG["crop_bottom"])
-    normalized["trim_start_seconds"] = _non_negative_float(
-        normalized.get("trim_start_seconds"),
-        DEFAULT_WORKFLOW_CONFIG["trim_start_seconds"],
-    )
-    normalized["trim_end_seconds"] = _non_negative_float(
-        normalized.get("trim_end_seconds"),
-        DEFAULT_WORKFLOW_CONFIG["trim_end_seconds"],
-    )
-    normalized["trim_start_frames"] = _non_negative_int(
-        normalized.get("trim_start_frames"),
-        DEFAULT_WORKFLOW_CONFIG["trim_start_frames"],
-    )
-    normalized["trim_end_frames"] = _non_negative_int(
-        normalized.get("trim_end_frames"),
-        DEFAULT_WORKFLOW_CONFIG["trim_end_frames"],
-    )
+    normalized["trim_start_seconds"] = _non_negative_float(normalized.get("trim_start_seconds"), DEFAULT_WORKFLOW_CONFIG["trim_start_seconds"])
+    normalized["trim_end_seconds"] = _non_negative_float(normalized.get("trim_end_seconds"), DEFAULT_WORKFLOW_CONFIG["trim_end_seconds"])
+    normalized["trim_start_frames"] = _non_negative_int(normalized.get("trim_start_frames"), DEFAULT_WORKFLOW_CONFIG["trim_start_frames"])
+    normalized["trim_end_frames"] = _non_negative_int(normalized.get("trim_end_frames"), DEFAULT_WORKFLOW_CONFIG["trim_end_frames"])
     if "duration" in normalized:
         normalized["duration"] = _non_negative_float(normalized.get("duration"), 0.0)
     if "source_fps" in normalized:
         normalized["source_fps"] = _non_negative_float(normalized.get("source_fps"), 0.0)
+
     normalized["audio_volume"] = _bounded_float(normalized.get("audio_volume"), 1.0, 0.0, 3.0)
+    normalized["video_eq_brightness"] = _bounded_float(normalized.get("video_eq_brightness"), 0.0, -1.0, 1.0)
+    normalized["video_eq_contrast"] = _bounded_float(normalized.get("video_eq_contrast"), 1.0, 0.0, 3.0)
+    normalized["video_eq_saturation"] = _bounded_float(normalized.get("video_eq_saturation"), 1.0, 0.0, 3.0)
+    normalized["video_denoise_strength"] = _bounded_float(normalized.get("video_denoise_strength"), 3.0, 0.0, 10.0)
+    normalized["video_sharpen_strength"] = _bounded_float(normalized.get("video_sharpen_strength"), 1.0, 0.0, 5.0)
+    normalized["audio_highpass_hz"] = _positive_int(normalized.get("audio_highpass_hz"), DEFAULT_WORKFLOW_CONFIG["audio_highpass_hz"])
+    normalized["audio_lowpass_hz"] = _positive_int(normalized.get("audio_lowpass_hz"), DEFAULT_WORKFLOW_CONFIG["audio_lowpass_hz"])
+    normalized["audio_fade_seconds"] = _non_negative_float(normalized.get("audio_fade_seconds"), DEFAULT_WORKFLOW_CONFIG["audio_fade_seconds"])
+    normalized["video_text"] = str(normalized.get("video_text") or "").strip()
+    normalized["advanced_video_filters"] = _safe_filter_chain(normalized.get("advanced_video_filters"))
+    normalized["advanced_audio_filters"] = _safe_filter_chain(normalized.get("advanced_audio_filters"))
     normalized["output_suffix"] = _safe_suffix(normalized.get("output_suffix", "processed"))
     return normalized
 
 
 def is_audio_output_format(output_container):
     return output_container in AUDIO_OUTPUT_FORMATS
+
+
+def is_gif_output_format(output_container):
+    return output_container == "gif"
+
+
+def selected_video_filters(config):
+    config = normalize_workflow_config(config)
+    return {config["video_filter_1"], config["video_filter_2"], config["video_filter_3"]}
+
+
+def selected_audio_filters(config):
+    config = normalize_workflow_config(config)
+    return {config["audio_filter_1"], config["audio_filter_2"], config["audio_filter_3"]}
 
 
 def _positive_int(value, default):
@@ -241,9 +367,24 @@ def _format_seconds(value):
 
 def _safe_suffix(value):
     suffix = str(value or "processed").strip()
-    suffix = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]+", "_", suffix)
+    suffix = re.sub(r"[^A-Za-z0-9А-Яа-яЁё._-]+", "_", suffix)
     suffix = suffix.strip("._-")
     return suffix or "processed"
+
+
+def _safe_filter_chain(value):
+    text = str(value or "").strip()
+    if "\n" in text or "\r" in text:
+        text = ",".join(part.strip() for part in re.split(r"[\r\n]+", text) if part.strip())
+    return text
+
+
+def _escape_drawtext_text(value):
+    text = str(value or "").replace("\\", "\\\\")
+    text = text.replace(":", r"\:")
+    text = text.replace("'", r"\'")
+    text = text.replace(",", r"\,")
+    return text
 
 
 class WorkflowVideoTask(BaseTask):
@@ -252,6 +393,8 @@ class WorkflowVideoTask(BaseTask):
     def build_command(self, input_file, settings):
         config = normalize_workflow_config(settings)
 
+        if is_gif_output_format(config["output_container"]):
+            return self._build_gif_output_command(input_file, settings, config)
         if is_audio_output_format(config["output_container"]):
             return self._build_audio_output_command(input_file, settings, config)
 
@@ -292,19 +435,27 @@ class WorkflowVideoTask(BaseTask):
         )
         cmd.extend(video_args)
 
-        if "copy" not in video_args:
+        video_codec = video_args[video_args.index("-c:v") + 1] if "-c:v" in video_args else ""
+        if video_codec == "libvpx-vp9":
+            cmd.extend(["-b:v", "0"])
+        if video_codec == "libaom-av1":
+            cmd.extend(["-b:v", "0", "-cpu-used", "4"])
+        if video_codec not in ("", "copy", "libvpx-vp9", "libaom-av1"):
             cmd.extend(["-profile:v", "main", "-level:v", "4.1"])
 
         if config["fps_mode"] != "source":
             cmd.extend(["-r", str(config["fps_mode"])])
 
         if include_audio:
-            cmd.extend([
-                "-c:a", "aac",
-                "-b:a", AUDIO_BITRATES[config["audio_quality"]],
-                "-ac", "2",
-                "-ar", "48000",
-            ])
+            if config["output_container"] == "webm":
+                cmd.extend(["-c:a", "libopus", "-b:a", AUDIO_BITRATES[config["audio_quality"]]])
+            else:
+                cmd.extend([
+                    "-c:a", "aac",
+                    "-b:a", AUDIO_BITRATES[config["audio_quality"]],
+                    "-ac", "2",
+                    "-ar", "48000",
+                ])
         else:
             cmd.append("-an")
 
@@ -312,7 +463,9 @@ class WorkflowVideoTask(BaseTask):
             cmd.extend(["-tag:v", "avc1"])
 
         self.add_shortest_if_needed(cmd, ff_settings)
-        cmd.extend(["-movflags", "+faststart", output_path])
+        if config["output_container"] in ("mp4", "mov"):
+            cmd.extend(["-movflags", "+faststart"])
+        cmd.append(output_path)
         return cmd
 
     def _build_audio_output_command(self, input_file, settings, config):
@@ -341,22 +494,67 @@ class WorkflowVideoTask(BaseTask):
             cmd.extend(["-map", "0:a:0?"])
 
         cmd.append("-vn")
-        cmd.extend([
-            "-c:a",
-            AUDIO_OUTPUT_CODECS.get(config["output_container"], "aac"),
-            "-b:a",
-            AUDIO_BITRATES[config["audio_quality"]],
-            "-ac",
-            "2",
-            "-ar",
-            "48000",
-        ])
+        codec = AUDIO_OUTPUT_CODECS.get(config["output_container"], "aac")
+        cmd.extend(["-c:a", codec])
+        if config["output_container"] not in ("wav", "flac"):
+            cmd.extend(["-b:a", AUDIO_BITRATES[config["audio_quality"]]])
+        cmd.extend(["-ac", "2", "-ar", "48000"])
 
         if self.needs_silent_audio(ff_settings):
             silent_duration = self.get_output_duration({**settings, **config})
             cmd.extend(["-t", _format_seconds(silent_duration if silent_duration > 0 else 1.0)])
 
         cmd.append(output_path)
+        return cmd
+
+    def _build_gif_output_command(self, input_file, settings, config):
+        output_path = self._output_path(input_file, config)
+        trim_start, trim_duration = self._trim_window(config)
+        has_video = bool(settings.get("source_width", 0) and settings.get("source_height", 0))
+        use_audio_waveform = config["gif_source_mode"] == "audio_waveform"
+        if config["gif_source_mode"] == "auto" and not has_video:
+            use_audio_waveform = True
+
+        cmd = [self.get_ffmpeg_path(settings.get("ffmpeg_path")), "-y"]
+        if trim_start > 0:
+            cmd.extend(["-ss", _format_seconds(trim_start)])
+        if trim_duration is not None:
+            cmd.extend(["-t", _format_seconds(trim_duration)])
+        cmd.extend(["-i", input_file])
+
+        if use_audio_waveform:
+            source = "[0:a]"
+            if not settings.get("has_audio", True):
+                silent_duration = trim_duration or config.get("duration", 0) or 1.0
+                cmd.extend([
+                    "-f", "lavfi",
+                    "-t", _format_seconds(silent_duration),
+                    "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                ])
+                source = "[1:a]"
+            height = max(int(config["gif_width"] * 9 / 16), 1)
+            audio_filters = self._audio_filters(config, {"speed": "1x", "include_audio": True, "has_audio": True})
+            filters = audio_filters + [
+                f"showwaves=s={config['gif_width']}x{height}:mode=line:colors=7aa2f7",
+                f"fps={config['gif_fps']}",
+                "format=rgb24",
+            ]
+        else:
+            ff_settings = {
+                "speed": config["speed"],
+                "include_audio": False,
+                "has_audio": False,
+                "use_gpu": False,
+            }
+            filters = self._video_filters(config, ff_settings)
+            filters.append(f"fps={config['gif_fps']}")
+            filters.append(f"scale={config['gif_width']}:-1:flags=lanczos")
+            source = "[0:v]"
+
+        chain = self.combine_filters(filters)
+        dither = f"=dither={config['gif_dither']}" if config["gif_dither"] != "none" else "=dither=none"
+        filter_complex = f"{source}{chain},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse{dither}"
+        cmd.extend(["-filter_complex", filter_complex, "-loop", "0", output_path])
         return cmd
 
     def get_output_duration(self, settings):
@@ -399,7 +597,43 @@ class WorkflowVideoTask(BaseTask):
         if speed_filter:
             filters.append(speed_filter)
 
+        for key in ("video_filter_1", "video_filter_2", "video_filter_3"):
+            extra_filter = self._extra_video_filter(config, config[key])
+            if extra_filter:
+                filters.append(extra_filter)
+
+        if config["advanced_video_filters"]:
+            filters.append(config["advanced_video_filters"])
         return filters
+
+    def _extra_video_filter(self, config, mode):
+        if mode == "hflip":
+            return "hflip"
+        if mode == "vflip":
+            return "vflip"
+        if mode == "rotate_90":
+            return "transpose=1"
+        if mode == "grayscale":
+            return "format=gray"
+        if mode == "eq":
+            return (
+                f"eq=brightness={config['video_eq_brightness']:g}:"
+                f"contrast={config['video_eq_contrast']:g}:"
+                f"saturation={config['video_eq_saturation']:g}"
+            )
+        if mode == "denoise":
+            strength = config["video_denoise_strength"]
+            return f"hqdn3d={strength:g}:{strength:g}:{strength:g}:{strength:g}"
+        if mode == "sharpen":
+            return f"unsharp=5:5:{config['video_sharpen_strength']:g}:5:5:0.0"
+        if mode == "deinterlace":
+            return "yadif"
+        if mode == "pad_square":
+            return r"pad=max(iw\,ih):max(iw\,ih):(ow-iw)/2:(oh-ih)/2"
+        if mode == "drawtext" and config["video_text"]:
+            text = _escape_drawtext_text(config["video_text"])
+            return f"drawtext=text='{text}':x=(w-text_w)/2:y=h-th-24:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.45"
+        return None
 
     def _manual_crop_filter(self, config):
         left = config["crop_left"]
@@ -428,7 +662,30 @@ class WorkflowVideoTask(BaseTask):
         volume = config["audio_volume"]
         if abs(volume - 1.0) > 1e-9:
             filters.append(f"volume={volume:g}")
+
+        for key in ("audio_filter_1", "audio_filter_2", "audio_filter_3"):
+            extra_filter = self._extra_audio_filter(config, config[key])
+            if extra_filter:
+                filters.append(extra_filter)
+
+        if config["advanced_audio_filters"]:
+            filters.append(config["advanced_audio_filters"])
         return filters
+
+    def _extra_audio_filter(self, config, mode):
+        if mode == "loudnorm":
+            return "loudnorm=I=-16:TP=-1.5:LRA=11"
+        if mode == "highpass":
+            return f"highpass=f={config['audio_highpass_hz']}"
+        if mode == "lowpass":
+            return f"lowpass=f={config['audio_lowpass_hz']}"
+        if mode == "acompressor":
+            return "acompressor=threshold=-18dB:ratio=3:attack=20:release=250"
+        if mode == "afade":
+            return f"afade=t=in:st=0:d={config['audio_fade_seconds']:g}"
+        if mode == "silenceremove":
+            return "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.1"
+        return None
 
     def _trim_window(self, config):
         start = 0.0

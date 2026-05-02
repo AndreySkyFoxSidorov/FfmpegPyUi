@@ -111,7 +111,10 @@ class TestLogic(unittest.TestCase):
             "sidebar.ffmpeg_browse",
             "sidebar.ffmpeg_browse_title",
             "workflow.run",
+            "workflow.command_preview_title",
+            "workflow.command_preview_error",
             "crop.preview_title",
+            "crop.preview_loading",
             "trim.preview_title",
             "trim.preview_no_file",
             "trim.preview_info",
@@ -344,6 +347,109 @@ class TestLogic(unittest.TestCase):
         self.assertEqual(cmd[t_indexes[-1] + 1], "12")
         self.assertGreater(t_indexes[-1], cmd.index("-i"))
         self.assertTrue(cmd[-1].endswith("_processed.mp3"))
+
+    def test_workflow_webm_uses_web_codecs(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "clip.mov",
+            {
+                "output_container": "webm",
+                "video_codec": "libx264",
+                "has_audio": True,
+            },
+        )
+
+        self.assertEqual(cmd[cmd.index("-c:v") + 1], "libvpx-vp9")
+        self.assertIn("-b:v", cmd)
+        self.assertEqual(cmd[cmd.index("-c:a") + 1], "libopus")
+        self.assertTrue(cmd[-1].endswith("_processed.webm"))
+
+    def test_workflow_wav_extracts_audio_without_bitrate(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "clip.mov",
+            {
+                "output_container": "wav",
+                "audio_quality": "high",
+                "has_audio": True,
+            },
+        )
+
+        self.assertIn("-vn", cmd)
+        self.assertEqual(cmd[cmd.index("-c:a") + 1], "pcm_s16le")
+        self.assertNotIn("-b:a", cmd)
+        self.assertTrue(cmd[-1].endswith("_processed.wav"))
+
+    def test_workflow_gif_from_video_uses_palette_filtergraph(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "clip.mov",
+            {
+                "output_container": "gif",
+                "gif_source_mode": "video_frames",
+                "gif_width": 480,
+                "gif_fps": 12,
+                "source_width": 1920,
+                "source_height": 1080,
+                "has_audio": True,
+            },
+        )
+
+        filtergraph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("[0:v]", filtergraph)
+        self.assertIn("fps=12", filtergraph)
+        self.assertIn("scale=480:-1:flags=lanczos", filtergraph)
+        self.assertIn("palettegen", filtergraph)
+        self.assertIn("paletteuse", filtergraph)
+        self.assertTrue(cmd[-1].endswith("_processed.gif"))
+
+    def test_workflow_gif_from_audio_uses_showwaves(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "sound.mp3",
+            {
+                "output_container": "gif",
+                "gif_source_mode": "audio_waveform",
+                "gif_width": 640,
+                "gif_fps": 15,
+                "has_audio": True,
+            },
+        )
+
+        filtergraph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("[0:a]", filtergraph)
+        self.assertIn("showwaves=s=640x360", filtergraph)
+        self.assertIn("paletteuse", filtergraph)
+        self.assertTrue(cmd[-1].endswith("_processed.gif"))
+
+    def test_workflow_grouped_filters_append_ffmpeg_filters(self):
+        task = WorkflowVideoTask()
+        cmd = task.build_command(
+            "clip.mov",
+            {
+                "video_filter_1": "eq",
+                "video_eq_brightness": 0.2,
+                "video_eq_contrast": 1.4,
+                "video_eq_saturation": 1.2,
+                "video_filter_2": "denoise",
+                "video_denoise_strength": 4,
+                "audio_filter_1": "loudnorm",
+                "audio_filter_2": "highpass",
+                "audio_highpass_hz": 120,
+                "advanced_video_filters": "curves=preset=medium_contrast",
+                "advanced_audio_filters": "equalizer=f=1000:t=q:w=1:g=3",
+                "has_audio": True,
+            },
+        )
+
+        video_filters = cmd[cmd.index("-vf") + 1]
+        audio_filters = cmd[cmd.index("-filter:a") + 1]
+        self.assertIn("eq=brightness=0.2:contrast=1.4:saturation=1.2", video_filters)
+        self.assertIn("hqdn3d=4:4:4:4", video_filters)
+        self.assertIn("curves=preset=medium_contrast", video_filters)
+        self.assertIn("loudnorm=I=-16:TP=-1.5:LRA=11", audio_filters)
+        self.assertIn("highpass=f=120", audio_filters)
+        self.assertIn("equalizer=f=1000:t=q:w=1:g=3", audio_filters)
 
     def test_ffmpeg_path_resolver_uses_platform_binary_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:
