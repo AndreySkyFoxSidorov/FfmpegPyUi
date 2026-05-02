@@ -1,74 +1,151 @@
+![FfmpegPyUi desktop FFmpeg GUI preview showing saved schemes, output settings, file queue, and generated command](prev.jpg)
+
 # FfmpegPyUi
 
-FfmpegPyUi is a desktop GUI for FFmpeg that turns "I need the right command line for this video" into "drop files here, pick a scheme, press the button, pretend you always knew the flags."
+**Tired of typing long, fragile FFmpeg commands? Build the command visually, save it as a reusable profile, and get back to processing video, audio, and GIFs faster.**
 
-It is built with Python, CustomTkinter, TkinterDnD, and a healthy respect for how many FFmpeg options a human can remember before lunch.
+FfmpegPyUi is a desktop FFmpeg GUI and command configurator for people who need FFmpeg power without rebuilding the same terminal command every time. Drop in media files, choose a workflow scheme, tune the settings, preview the generated FFmpeg command, and run batch processing from a clean Python desktop app.
 
-## What It Does
+It works as an FFmpeg command generator, batch video converter, audio extractor, GIF maker, media workflow builder, and quick preset manager in one place.
 
-- Batch-process video and audio files from a friendly desktop interface.
-- Add files one by one, add whole folders, or drag-and-drop media into the queue.
-- Read media details with `ffprobe`: duration, resolution, codecs, size, bitrate, and FPS.
-- Convert to video containers: MP4, MOV, MKV, and WebM.
-- Extract or convert audio: MP3, WAV, AAC, FLAC, and OGG.
-- Create GIFs from video frames or generate animated waveform GIFs from audio.
-- Build grouped FFmpeg filter chains for video and audio, with optional raw `-vf` and `-af` overrides.
-- Preview the generated FFmpeg command before running a batch.
-- Run FFmpeg in the background while showing console output and progress.
-- Save local preferences without making your Git history smell like machine-specific config.
-- Use a local `./ffmpeg` folder by default, or point the app at another FFmpeg installation.
+## Supported Interface Languages
 
-## Built-In Video Schemes
+FfmpegPyUi currently includes 14 UI languages:
 
-The app includes practical presets for common video chores:
+English, Ukrainian, Russian, Spanish, Italian, German, Korean, Dutch, French, Portuguese, Traditional Chinese, Simplified Chinese, Polish, and Czech.
 
-- **MP4 for sharing**: a sensible default when the file needs to work almost everywhere.
-- **Small file**: when your upload limit is rude and your patience is limited.
-- **High quality**: keeps more detail and asks your disk space to be brave.
-- **Speed up 4x with sound**: useful for timelapses, reviews, and "please get to the point" footage.
-- **Speed up 10x without sound**: for when the original audio is mostly fan noise and regret.
-- **Square for WebGL**: crops and scales to a square output.
-- **MOV for editing**: higher-quality MOV output for post-production workflows.
-- **WebM for web**: VP9/Opus output for browsers and web delivery.
-- **GIF from video**: palette-based GIF generation from video frames.
-- **Audio waveform GIF**: turns an audio file into an animated waveform GIF.
-- **MP3 audio** and **WAV audio**: quick audio-only output recipes.
+## Why Use It
 
-You can load a scheme, tweak it, and save your own version for later.
+FFmpeg is brilliant, but the commands can get noisy fast: codecs, containers, CRF, presets, filters, audio maps, trim windows, crop values, GIF palettes, and hardware encoders all pile up. FfmpegPyUi turns those details into readable controls, while still showing the exact FFmpeg command before it runs.
 
-## Settings You Can Tweak
+Use it when you want to:
 
-FfmpegPyUi exposes the useful FFmpeg knobs without making you write a spellbook:
+- Convert videos without memorizing FFmpeg syntax.
+- Batch-process multiple media files from one queue.
+- Save your own processing profiles and reuse them on the next launch.
+- Build video, audio, and GIF workflows from one screen.
+- Keep expert control over filters and codec options when you need it.
 
-- **Output container**: MP4, MOV, MKV, WebM, MP3, WAV, AAC, FLAC, OGG, or GIF.
-- **Resolution**: keep original, fit to 720p, fit to 1080p, square 720, or custom width and height.
-- **Quality profile**: draft, small, balanced, high, or maximum.
-- **Encoding speed**: faster processing or smaller files.
-- **Video codec**: `libx264`, `libx265`, `h264_nvenc`, `hevc_nvenc`, `libvpx-vp9`, `libaom-av1`, or `copy`.
-- **NVIDIA GPU acceleration**: optional NVENC mode if your GPU and FFmpeg build support it.
-- **Crop**: no crop or manual crop values for left, right, top, and bottom.
-- **Trim**: trim by seconds or by frame count.
-- **FPS**: keep source FPS or force 24, 30, or 60 FPS.
-- **Playback speed**: common speed multipliers like 2x, 4x, 8x, 10x, and 16x.
-- **Audio mode**: keep audio, create a silent track when needed, or mute output.
-- **Audio quality and volume**: choose bitrate presets and adjust volume from quiet to "why is this waveform a rectangle?"
-- **Video filters**: grouped filters such as `hflip`, `vflip`, `transpose`, `eq`, `hqdn3d`, `unsharp`, `yadif`, `pad`, and `drawtext`.
-- **Audio filters**: grouped filters such as `loudnorm`, `highpass`, `lowpass`, `acompressor`, `afade`, and `silenceremove`.
-- **Advanced filter chains**: append raw `-vf` or `-af` filters when the grouped controls are not enough.
-- **GIF controls**: source mode, width, FPS, and `paletteuse` dithering.
-- **Output suffix**: control how processed files are named.
+## Reusable Schemes And Profiles
 
-## Extra Tools
+FfmpegPyUi ships with practical built-in schemes, and every scheme can be loaded, adjusted, and saved under your own name. Saved schemes are stored locally, so a repeat job can become a two-click workflow the next time you open the app.
 
-Alongside the main workflow, the codebase includes smaller task helpers for:
+You can:
 
-- Converting media to MP3.
-- Converting stereo MP3 to mono.
-- Boosting WAV volume with a limiter.
-- Creating WebGL-friendly MP4 files.
-- Creating MOV files for editing.
-- Extracting the first video frame.
-- Extracting random preview frames.
+- Load a built-in scheme.
+- Change output format, codec, filters, trim, crop, audio, speed, and quality.
+- Save the tuned setup as a custom scheme.
+- Load the same custom scheme after restarting the app.
+- Delete custom schemes when you no longer need them.
+- Reset back to the default MP4 workflow.
+
+## Built-In Schemes
+
+- **MP4 for sharing**: a safe default for common video sharing and playback.
+- **Small file**: HEVC-focused compression for smaller uploads and archives.
+- **High quality**: higher quality settings for cleaner exports.
+- **Speed up 4x with sound**: accelerate video while keeping audio in sync.
+- **Speed up 10x without sound**: fast silent review exports and timelapse-style output.
+- **Square for WebGL**: square 720p video output for WebGL-friendly assets.
+- **MOV for editing**: MOV output tuned for post-production workflows.
+- **WebM for web**: VP9/Opus output for browser delivery.
+- **GIF from video**: palette-based animated GIFs from video frames.
+- **Audio waveform GIF**: animated waveform GIFs generated from audio.
+- **MP3 audio**: quick audio extraction or conversion to MP3.
+- **WAV audio**: uncompressed WAV audio export.
+
+## Features
+
+### Input And Batch Workflow
+
+- Add single files from the file picker.
+- Add whole folders and scan them recursively.
+- Drag and drop files into the queue.
+- Pass files as command-line arguments when launching the app.
+- Batch-process every queued file with the same workflow settings.
+- Remove individual files from the queue.
+- Read source metadata with FFprobe: duration, resolution, video codec, audio codec, file size, bitrate, and FPS.
+
+### Supported Media Files
+
+FfmpegPyUi scans common video, audio, and animation files:
+
+- Video input: MP4, AVI, MOV, MKV, WMV, FLV, WebM, MPEG, MPG.
+- Audio input: WAV, MP3, AAC, M4A, FLAC, OGG.
+- Animation input: GIF.
+
+### Output Formats
+
+- Video containers: MP4, MOV, MKV, WebM.
+- Audio formats: MP3, WAV, AAC, FLAC, OGG.
+- Animation output: GIF from video frames or audio waveforms.
+
+### Video Encoding Controls
+
+- Choose video codecs: `libx264`, `libx265`, `h264_nvenc`, `hevc_nvenc`, `libvpx-vp9`, `libaom-av1`, or `copy`.
+- Use quality profiles: draft, small, balanced, high, maximum.
+- Choose encoding speed: fast, balanced, or smaller file.
+- Enable NVIDIA NVENC acceleration when your GPU and FFmpeg build support it.
+- Keep original resolution, fit to 720p, fit to 1080p, create square 720p output, or set custom width and height.
+- Keep source FPS or force 24, 30, or 60 FPS.
+- Speed up output by 2x, 4x, 8x, 10x, or 16x.
+- Use MP4 and MOV `+faststart` output for friendlier playback and sharing.
+
+### Crop, Trim, And Visual Checks
+
+- Manual crop by left, right, top, and bottom values.
+- Interactive visual crop preview using a real frame from the queued video.
+- Random-frame crop preview refresh for checking another point in the clip.
+- Trim by seconds.
+- Trim by frame count using source FPS.
+- Visual trim preview with draggable start and end handles.
+
+### Video Filters
+
+- Mirror horizontally with `hflip`.
+- Mirror vertically with `vflip`.
+- Rotate 90 degrees with `transpose`.
+- Convert to grayscale.
+- Adjust brightness, contrast, and saturation with `eq`.
+- Denoise with `hqdn3d`.
+- Sharpen with `unsharp`.
+- Deinterlace with `yadif`.
+- Pad to square output.
+- Add text overlays with `drawtext`.
+- Append a raw advanced `-vf` filter chain when the grouped controls are not enough.
+
+### Audio Controls And Filters
+
+- Keep audio, mute output, or create a silent audio track when the source has no audio.
+- Choose compact, normal, or high audio bitrate.
+- Adjust volume from 0x to 3x.
+- Normalize loudness with `loudnorm`.
+- Remove low rumble with `highpass`.
+- Remove high hiss with `lowpass`.
+- Smooth dynamics with `acompressor`.
+- Add fade-in with `afade`.
+- Trim leading silence with `silenceremove`.
+- Append a raw advanced `-af` filter chain for custom audio processing.
+
+### GIF Tools
+
+- Create GIFs from video frames.
+- Create animated waveform GIFs from audio using FFmpeg `showwaves`.
+- Automatically use video frames when video exists, or audio waveform mode for audio-only sources.
+- Configure GIF width and FPS.
+- Use palette generation and `paletteuse` for cleaner GIF output.
+- Choose dithering: `sierra2_4a`, `bayer`, or no dithering.
+
+### Command Preview And Processing
+
+- Preview the generated FFmpeg command before processing.
+- Run FFmpeg in the background without freezing the UI.
+- See live console output from FFmpeg.
+- Track progress from FFmpeg timestamps when duration is known.
+- Stop a running batch.
+- Store local app settings outside Git-tracked files.
+- Use the bundled `./ffmpeg` folder or choose another FFmpeg installation.
+- Fall back to system `ffmpeg` and `ffprobe` when local binaries are not present.
 
 ## Requirements
 
@@ -87,7 +164,7 @@ By default, the app looks for FFmpeg in:
 ./ffmpeg
 ```
 
-That folder is intentionally ignored by Git. FFmpeg binaries are big, platform-specific, and not the kind of souvenir you want in every clone.
+That folder is intentionally ignored by Git because FFmpeg binaries are large and platform-specific.
 
 On Windows, this layout works well:
 
@@ -155,6 +232,18 @@ Files can be passed as command-line arguments:
 python ffmpegpyui/main.py path/to/video.mp4
 ```
 
+## Typical Workflow
+
+1. Install dependencies.
+2. Put FFmpeg in `./ffmpeg` or select your FFmpeg folder in the app.
+3. Launch FfmpegPyUi.
+4. Drop files into the queue.
+5. Pick a built-in scheme or load your saved profile.
+6. Adjust output, trim, crop, filters, codecs, speed, and quality.
+7. Check the generated FFmpeg command.
+8. Start processing.
+9. Save the tuned scheme if you will use it again.
+
 ## Testing
 
 Run the test suite with:
@@ -163,25 +252,19 @@ Run the test suite with:
 python -m unittest discover -s tests
 ```
 
-## Git Hygiene
+## Git Notes
 
 The repository intentionally ignores local state, generated previews, caches, and local FFmpeg binaries:
 
-- `/.agent/`
 - `/ffmpeg/`
 - `/ffmpegpyui/state.json`
 - `/ffmpegpyui/preview_cache/`
-- Python caches, virtual environments, build artifacts, coverage files, editor settings, and OS junk.
+- Python caches, virtual environments, build artifacts, coverage files, editor settings, and OS files.
 
-`ffmpegpyui/state.json` stores local app preferences. It belongs to your machine, not to your repo.
+The preview image in this README is referenced with a relative Markdown path:
 
-## Typical Workflow
+```markdown
+![FfmpegPyUi desktop FFmpeg GUI preview showing saved schemes, output settings, file queue, and generated command](prev.jpg)
+```
 
-1. Install dependencies.
-2. Put FFmpeg in `./ffmpeg` or select your FFmpeg folder in the app.
-3. Launch FfmpegPyUi.
-4. Drop in videos.
-5. Pick a scheme.
-6. Adjust the settings.
-7. Start processing.
-8. Watch FFmpeg do the loud part while you take credit for the clean output.
+GitHub renders repository images reliably when they use relative paths from the README file.
