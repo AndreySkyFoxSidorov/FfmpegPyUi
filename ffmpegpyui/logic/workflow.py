@@ -11,7 +11,6 @@ DEFAULT_BUILTIN_SCHEME = "MP4 для отправки"
 
 DEFAULT_WORKFLOW_CONFIG = {
     "output_container": "mp4",
-    "gif_source_mode": "auto",
     "gif_width": 640,
     "gif_fps": 15,
     "gif_dither": "sierra2_4a",
@@ -113,19 +112,10 @@ BUILTIN_SCHEMES = {
     "GIF из видео": {
         **DEFAULT_WORKFLOW_CONFIG,
         "output_container": "gif",
-        "gif_source_mode": "video_frames",
         "gif_width": 640,
         "gif_fps": 15,
         "audio_mode": "mute",
         "output_suffix": "gif",
-    },
-    "GIF из аудио": {
-        **DEFAULT_WORKFLOW_CONFIG,
-        "output_container": "gif",
-        "gif_source_mode": "audio_waveform",
-        "gif_width": 640,
-        "gif_fps": 15,
-        "output_suffix": "wave",
     },
     "MP3 аудио": {
         **DEFAULT_WORKFLOW_CONFIG,
@@ -165,7 +155,6 @@ VIDEO_CODECS = {
     "copy": "copy",
 }
 
-GIF_SOURCE_MODES = {"auto", "video_frames", "audio_waveform"}
 GIF_DITHER_MODES = {"sierra2_4a", "bayer", "none"}
 RESOLUTION_MODES = {"original", "fit_1080", "fit_720", "square_720", "custom"}
 CROP_MODES = {"none", "manual"}
@@ -230,13 +219,12 @@ def get_builtin_scheme(name):
 
 def normalize_workflow_config(config):
     normalized = {**DEFAULT_WORKFLOW_CONFIG, **(config or {})}
+    normalized.pop("gif_source_mode", None)
 
     if normalized.get("speed") not in SPEED_OPTIONS:
         normalized["speed"] = DEFAULT_WORKFLOW_CONFIG["speed"]
     if normalized.get("output_container") not in OUTPUT_EXTENSIONS:
         normalized["output_container"] = DEFAULT_WORKFLOW_CONFIG["output_container"]
-    if normalized.get("gif_source_mode") not in GIF_SOURCE_MODES:
-        normalized["gif_source_mode"] = DEFAULT_WORKFLOW_CONFIG["gif_source_mode"]
     if normalized.get("gif_dither") not in GIF_DITHER_MODES:
         normalized["gif_dither"] = DEFAULT_WORKFLOW_CONFIG["gif_dither"]
     if normalized.get("quality_profile") not in QUALITY_PROFILES:
@@ -511,9 +499,8 @@ class WorkflowVideoTask(BaseTask):
         output_path = self._output_path(input_file, config)
         trim_start, trim_duration = self._trim_window(config)
         has_video = bool(settings.get("source_width", 0) and settings.get("source_height", 0))
-        use_audio_waveform = config["gif_source_mode"] == "audio_waveform"
-        if config["gif_source_mode"] == "auto" and not has_video:
-            use_audio_waveform = True
+        if not has_video:
+            raise ValueError("GIF output requires a video input")
 
         cmd = [self.get_ffmpeg_path(settings.get("ffmpeg_path")), "-y"]
         if trim_start > 0:
@@ -522,34 +509,16 @@ class WorkflowVideoTask(BaseTask):
             cmd.extend(["-t", _format_seconds(trim_duration)])
         cmd.extend(["-i", input_file])
 
-        if use_audio_waveform:
-            source = "[0:a]"
-            if not settings.get("has_audio", True):
-                silent_duration = trim_duration or config.get("duration", 0) or 1.0
-                cmd.extend([
-                    "-f", "lavfi",
-                    "-t", _format_seconds(silent_duration),
-                    "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-                ])
-                source = "[1:a]"
-            height = max(int(config["gif_width"] * 9 / 16), 1)
-            audio_filters = self._audio_filters(config, {"speed": "1x", "include_audio": True, "has_audio": True})
-            filters = audio_filters + [
-                f"showwaves=s={config['gif_width']}x{height}:mode=line:colors=7aa2f7",
-                f"fps={config['gif_fps']}",
-                "format=rgb24",
-            ]
-        else:
-            ff_settings = {
-                "speed": config["speed"],
-                "include_audio": False,
-                "has_audio": False,
-                "use_gpu": False,
-            }
-            filters = self._video_filters(config, ff_settings)
-            filters.append(f"fps={config['gif_fps']}")
-            filters.append(f"scale={config['gif_width']}:-1:flags=lanczos")
-            source = "[0:v]"
+        ff_settings = {
+            "speed": config["speed"],
+            "include_audio": False,
+            "has_audio": False,
+            "use_gpu": False,
+        }
+        filters = self._video_filters(config, ff_settings)
+        filters.append(f"fps={config['gif_fps']}")
+        filters.append(f"scale={config['gif_width']}:-1:flags=lanczos")
+        source = "[0:v]"
 
         chain = self.combine_filters(filters)
         dither = f"=dither={config['gif_dither']}" if config["gif_dither"] != "none" else "=dither=none"

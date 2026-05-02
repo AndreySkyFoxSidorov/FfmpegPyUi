@@ -39,11 +39,6 @@ WORKFLOW_OPTIONS = {
         {"value": "ogg", "label_key": "option.output_container.ogg"},
         {"value": "gif", "label_key": "option.output_container.gif"},
     ],
-    "gif_source_mode": [
-        {"value": "auto", "label_key": "option.gif_source_mode.auto"},
-        {"value": "video_frames", "label_key": "option.gif_source_mode.video_frames"},
-        {"value": "audio_waveform", "label_key": "option.gif_source_mode.audio_waveform"},
-    ],
     "gif_dither": [
         {"value": "sierra2_4a", "label_key": "option.gif_dither.sierra2_4a"},
         {"value": "bayer", "label_key": "option.gif_dither.bayer"},
@@ -158,13 +153,6 @@ WORKFLOW_SECTIONS = [
         "title_key": "section.gif.title",
         "description_key": "section.gif.description",
         "fields": [
-            {
-                "key": "gif_source_mode",
-                "type": "choice",
-                "options": "gif_source_mode",
-                "label_key": "field.gif_source_mode.label",
-                "description_key": "field.gif_source_mode.description",
-            },
             {
                 "key": "gif_width",
                 "type": "entry",
@@ -514,7 +502,6 @@ BUILTIN_SCHEME_LABEL_KEYS = {
     "MOV для монтажа": "scheme.mov_edit",
     "WebM для сайта": "scheme.webm_web",
     "GIF из видео": "scheme.gif_video",
-    "GIF из аудио": "scheme.gif_audio",
     "MP3 аудио": "scheme.mp3_audio",
     "WAV аудио": "scheme.wav_audio",
 }

@@ -46,10 +46,11 @@ from logic.workflow import (
 )
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
+APP_ICON_ICO = os.path.join(os.path.dirname(__file__), "favicon.ico")
+APP_ICON_PNG = os.path.join(os.path.dirname(__file__), "favicon.png")
 DEFAULT_FFMPEG_PATH = "./ffmpeg"
 FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
 AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS = {
-    "gif_source_mode",
     "gif_width",
     "gif_fps",
     "gif_dither",
@@ -77,7 +78,7 @@ AUDIO_OUTPUT_HIDDEN_WORKFLOW_FIELDS = {
     "video_text",
     "advanced_video_filters",
 }
-GIF_ONLY_FIELDS = {"gif_source_mode", "gif_width", "gif_fps", "gif_dither"}
+GIF_ONLY_FIELDS = {"gif_width", "gif_fps", "gif_dither"}
 CROP_PARAMETER_FIELDS = {"crop_left", "crop_right", "crop_top", "crop_bottom"}
 RESOLUTION_PARAMETER_FIELDS = {"custom_width", "custom_height"}
 TRIM_SECONDS_FIELDS = {"trim_start_seconds", "trim_end_seconds"}
@@ -147,7 +148,21 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.crop_preview_geometry = None
         self.crop_drag_handle = None
         self.time_trim_canvas = None
+        self.time_trim_start_canvas = None
+        self.time_trim_end_canvas = None
         self.time_trim_label = None
+        self.time_trim_start_image = None
+        self.time_trim_end_image = None
+        self.time_trim_start_key = None
+        self.time_trim_end_key = None
+        self.time_trim_start_error_key = None
+        self.time_trim_end_error_key = None
+        self.time_trim_start_request_id = 0
+        self.time_trim_end_request_id = 0
+        self.time_trim_start_after_id = None
+        self.time_trim_end_after_id = None
+        self.time_trim_start_loading = False
+        self.time_trim_end_loading = False
         self.time_trim_geometry = None
         self.time_trim_drag_handle = None
 
@@ -156,6 +171,18 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         set_language(self.app_state.get("language", get_language()))
 
         self.title(t("app.title"))
+        self.app_icon_image = None
+        if os.path.exists(APP_ICON_PNG):
+            try:
+                self.app_icon_image = PhotoImage(file=APP_ICON_PNG)
+                self.iconphoto(True, self.app_icon_image)
+            except Exception:
+                self.app_icon_image = None
+        if os.path.exists(APP_ICON_ICO):
+            try:
+                self.iconbitmap(default=APP_ICON_ICO)
+            except Exception:
+                pass
         self.geometry("1420x940")
         self.minsize(1280, 860)
         self.configure(fg_color=Colors.bg_dark)
@@ -171,6 +198,7 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.dnd_bind('<<Drop>>', self.drop)
 
         self.runner = FfmpegRunner(self.update_console, self.on_task_complete, self.update_progress)
+        self.clear_preview_cache_files()
 
         if files:
             self.process_input_paths(files)
@@ -500,6 +528,8 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.crop_preview_geometry = None
         self.crop_drag_handle = None
         self.time_trim_canvas = None
+        self.time_trim_start_canvas = None
+        self.time_trim_end_canvas = None
         self.time_trim_label = None
         self.time_trim_geometry = None
         self.time_trim_drag_handle = None
@@ -554,7 +584,6 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         return (
             is_audio_output_format(config["output_container"]),
             is_gif_output_format(config["output_container"]),
-            config["gif_source_mode"],
             config["resolution_mode"],
             config["crop_mode"],
             config["trim_mode"],
@@ -578,15 +607,12 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return False
         if is_gif_output_format(config["output_container"]) and key in {"quality_profile", "encoding_speed", "video_codec", "fps_mode", "audio_mode", "audio_quality"}:
             return False
-        if is_gif_output_format(config["output_container"]) and config["gif_source_mode"] == "audio_waveform" and key in VIDEO_FILTER_FIELDS:
-            return False
-        if is_gif_output_format(config["output_container"]) and config["gif_source_mode"] != "audio_waveform" and key in AUDIO_FILTER_FIELDS:
+        if is_gif_output_format(config["output_container"]) and key in AUDIO_FILTER_FIELDS:
             return False
         if (
             config["audio_mode"] == "mute"
             and key in AUDIO_FILTER_FIELDS
             and not is_audio_output_format(config["output_container"])
-            and not (is_gif_output_format(config["output_container"]) and config["gif_source_mode"] == "audio_waveform")
         ):
             return False
         if key in RESOLUTION_PARAMETER_FIELDS and config["resolution_mode"] != "custom":
@@ -729,23 +755,33 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def create_time_trim_preview(self, parent, row):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=row, column=0, columnspan=2, padx=14, pady=(4, 14), sticky="ew")
-        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=0)
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=0)
 
         title = ctk.CTkLabel(frame, text=t("trim.preview_title"), font=("Segoe UI", 15, "bold"),
                              text_color=Colors.accent, anchor="w")
-        title.grid(row=0, column=0, pady=(4, 4), sticky="ew")
+        title.grid(row=0, column=0, columnspan=3, pady=(4, 4), sticky="ew")
+
+        self.time_trim_start_canvas = Canvas(frame, width=190, height=120, bg=Colors.bg_dark,
+                                             highlightthickness=1, highlightbackground=Colors.border)
+        self.time_trim_start_canvas.grid(row=1, column=0, padx=(0, 12), pady=(6, 8), sticky="w")
 
         self.time_trim_canvas = Canvas(frame, width=560, height=120, bg=Colors.bg_dark,
                                        highlightthickness=1, highlightbackground=Colors.border)
-        self.time_trim_canvas.grid(row=1, column=0, pady=(6, 8))
+        self.time_trim_canvas.grid(row=1, column=1, pady=(6, 8))
         self.time_trim_canvas.bind("<ButtonPress-1>", self.on_time_trim_canvas_press)
         self.time_trim_canvas.bind("<B1-Motion>", self.on_time_trim_canvas_drag)
         self.time_trim_canvas.bind("<ButtonRelease-1>", self.on_time_trim_canvas_release)
 
+        self.time_trim_end_canvas = Canvas(frame, width=190, height=120, bg=Colors.bg_dark,
+                                           highlightthickness=1, highlightbackground=Colors.border)
+        self.time_trim_end_canvas.grid(row=1, column=2, padx=(12, 0), pady=(6, 8), sticky="e")
+
         self.time_trim_label = ctk.CTkLabel(frame, text="", font=Fonts.small,
                                             text_color=Colors.text_secondary, anchor="w",
-                                            justify="left", wraplength=820)
-        self.time_trim_label.grid(row=2, column=0, pady=(0, 4), sticky="ew")
+                                            justify="left", wraplength=980)
+        self.time_trim_label.grid(row=2, column=0, columnspan=3, pady=(0, 4), sticky="ew")
 
     def get_first_video_path(self):
         for path in self.files:
@@ -759,6 +795,22 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if path:
             self.request_crop_preview_frame(path, force=True)
         self.update_crop_preview()
+
+    def clear_media_previews(self):
+        self.request_crop_preview_frame(None)
+        self.clear_time_trim_frame_previews()
+
+    def clear_preview_cache_files(self):
+        preview_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "preview_cache")
+        if os.path.isdir(preview_dir):
+            for name in os.listdir(preview_dir):
+                if name == "crop_preview.png" or name.startswith("crop_preview_") or name.startswith("time_trim_"):
+                    path = os.path.join(preview_dir, name)
+                    if os.path.isfile(path):
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
 
     def request_crop_preview_frame(self, path, force=False):
         if not path:
@@ -796,6 +848,11 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         preview_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "preview_cache")
         os.makedirs(preview_dir, exist_ok=True)
         output_path = os.path.join(preview_dir, f"crop_preview_{request_id}.png")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
 
         cmd = [
             WorkflowVideoTask.get_ffmpeg_path(self.get_ffmpeg_path_setting()),
@@ -979,6 +1036,11 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         start_seconds, end_seconds = self.get_time_trim_seconds(settings, duration, fps)
         keep_seconds = max(duration - start_seconds - end_seconds, 0.0)
+        frame_step = 1.0 / fps if fps > 0 else 0.033
+        last_frame_seconds = max(duration - frame_step, 0.0)
+        start_preview_seconds = min(max(start_seconds, 0.0), last_frame_seconds)
+        end_preview_seconds = duration - end_seconds - frame_step
+        end_preview_seconds = min(max(end_preview_seconds, start_preview_seconds), last_frame_seconds)
 
         canvas_w = 560
         canvas_h = 120
@@ -1017,6 +1079,8 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
             "x1": x1,
             "start_seconds": start_seconds,
             "end_seconds": end_seconds,
+            "start_preview_seconds": start_preview_seconds,
+            "end_preview_seconds": end_preview_seconds,
         }
 
         info_text = t(
@@ -1030,6 +1094,283 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not has_real_duration:
             info_text = f"{t('trim.preview_no_file')}\n{info_text}"
         self.time_trim_label.configure(text=info_text)
+
+        video_path = self.get_first_video_path()
+        if video_path and has_real_duration:
+            self.schedule_time_trim_frame_previews(
+                video_path,
+                start_preview_seconds,
+                end_preview_seconds,
+            )
+        else:
+            self.clear_time_trim_frame_previews()
+        self.draw_time_trim_frame_previews(start_preview_seconds, end_preview_seconds)
+
+    def clear_time_trim_frame_previews(self):
+        if self.time_trim_start_after_id:
+            try:
+                self.after_cancel(self.time_trim_start_after_id)
+            except Exception:
+                pass
+            self.time_trim_start_after_id = None
+        if self.time_trim_end_after_id:
+            try:
+                self.after_cancel(self.time_trim_end_after_id)
+            except Exception:
+                pass
+            self.time_trim_end_after_id = None
+
+        self.time_trim_start_request_id += 1
+        self.time_trim_end_request_id += 1
+        self.time_trim_start_key = None
+        self.time_trim_end_key = None
+        self.time_trim_start_error_key = None
+        self.time_trim_end_error_key = None
+        self.time_trim_start_image = None
+        self.time_trim_end_image = None
+        self.time_trim_start_loading = False
+        self.time_trim_end_loading = False
+
+    def schedule_time_trim_frame_previews(self, path, start_seconds, end_seconds, force=False):
+        ffmpeg_path = WorkflowVideoTask.get_ffmpeg_path(self.get_ffmpeg_path_setting())
+        self.schedule_time_trim_frame_preview("start", ffmpeg_path, path, start_seconds, force)
+        self.schedule_time_trim_frame_preview("end", ffmpeg_path, path, end_seconds, force)
+        self.draw_time_trim_frame_previews(start_seconds, end_seconds)
+
+    def schedule_time_trim_frame_preview(self, side, ffmpeg_path, path, seconds, force=False):
+        key = (path, round(seconds, 3))
+        if side == "start":
+            current_key = self.time_trim_start_key
+            image = self.time_trim_start_image
+            loading = self.time_trim_start_loading
+            error_key = self.time_trim_start_error_key
+            after_id = self.time_trim_start_after_id
+        elif side == "end":
+            current_key = self.time_trim_end_key
+            image = self.time_trim_end_image
+            loading = self.time_trim_end_loading
+            error_key = self.time_trim_end_error_key
+            after_id = self.time_trim_end_after_id
+        else:
+            return
+
+        if not force and key == current_key and image:
+            return
+        if not force and key == current_key and loading:
+            return
+        if not force and key == error_key:
+            return
+
+        if key != current_key:
+            if side == "start":
+                self.time_trim_start_request_id += 1
+                self.time_trim_start_key = key
+                self.time_trim_start_image = None
+                self.time_trim_start_loading = True
+            elif side == "end":
+                self.time_trim_end_request_id += 1
+                self.time_trim_end_key = key
+                self.time_trim_end_image = None
+                self.time_trim_end_loading = True
+
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            if side == "start":
+                self.time_trim_start_after_id = None
+            elif side == "end":
+                self.time_trim_end_after_id = None
+
+        if force:
+            self.request_time_trim_frame_preview(side, ffmpeg_path, path, seconds, key)
+        else:
+            after_id = self.after(
+                180,
+                lambda: self.request_time_trim_frame_preview(
+                    side,
+                    ffmpeg_path,
+                    path,
+                    seconds,
+                    key,
+                ),
+            )
+            if side == "start":
+                self.time_trim_start_after_id = after_id
+            elif side == "end":
+                self.time_trim_end_after_id = after_id
+
+    def request_time_trim_frame_preview(self, side, ffmpeg_path, path, seconds, key):
+        if side == "start":
+            self.time_trim_start_after_id = None
+            self.time_trim_start_request_id += 1
+            request_id = self.time_trim_start_request_id
+            self.time_trim_start_key = key
+            self.time_trim_start_loading = True
+        elif side == "end":
+            self.time_trim_end_after_id = None
+            self.time_trim_end_request_id += 1
+            request_id = self.time_trim_end_request_id
+            self.time_trim_end_key = key
+            self.time_trim_end_loading = True
+        else:
+            return
+
+        thread = threading.Thread(
+            target=self.extract_time_trim_frame_preview,
+            args=(side, request_id, ffmpeg_path, path, seconds, key),
+            daemon=True,
+        )
+        thread.start()
+
+    def extract_time_trim_frame_preview(self, side, request_id, ffmpeg_path, path, seconds, key):
+        preview_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "preview_cache")
+        os.makedirs(preview_dir, exist_ok=True)
+        output_path = os.path.join(preview_dir, f"time_trim_{request_id}_{side}.png")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        timestamps = [max(seconds, 0.0)]
+        if side == "end":
+            for offset in (0.08, 0.2, 0.5, 1.0):
+                fallback_timestamp = max(seconds - offset, 0.0)
+                if fallback_timestamp not in timestamps:
+                    timestamps.append(fallback_timestamp)
+
+        success = False
+        for timestamp in timestamps:
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-ss", f"{timestamp:.3f}",
+                "-i", path,
+                "-frames:v", "1",
+                "-vf", "scale=188:86:force_original_aspect_ratio=decrease",
+                output_path,
+            ]
+            try:
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    startupinfo=startupinfo,
+                    timeout=20,
+                    check=True,
+                )
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    success = True
+                    break
+            except Exception as e:
+                print(f"Failed to extract time trim preview frame: {e}")
+
+        def apply_time_trim_frame_preview():
+            if side == "start":
+                if request_id == self.time_trim_start_request_id and key == self.time_trim_start_key:
+                    self.time_trim_start_loading = False
+                    if success and os.path.exists(output_path):
+                        try:
+                            self.time_trim_start_image = PhotoImage(file=output_path)
+                            self.time_trim_start_error_key = None
+                        except Exception as e:
+                            print(f"Failed to load time trim preview frame: {e}")
+                            self.time_trim_start_image = None
+                            self.time_trim_start_error_key = key
+                    else:
+                        self.time_trim_start_image = None
+                        self.time_trim_start_error_key = key
+            elif side == "end":
+                if request_id == self.time_trim_end_request_id and key == self.time_trim_end_key:
+                    self.time_trim_end_loading = False
+                    if success and os.path.exists(output_path):
+                        try:
+                            self.time_trim_end_image = PhotoImage(file=output_path)
+                            self.time_trim_end_error_key = None
+                        except Exception as e:
+                            print(f"Failed to load time trim preview frame: {e}")
+                            self.time_trim_end_image = None
+                            self.time_trim_end_error_key = key
+                    else:
+                        self.time_trim_end_image = None
+                        self.time_trim_end_error_key = key
+
+            if self.time_trim_geometry:
+                self.draw_time_trim_frame_previews(
+                    self.time_trim_geometry["start_preview_seconds"],
+                    self.time_trim_geometry["end_preview_seconds"],
+                )
+
+        try:
+            self.after(0, apply_time_trim_frame_preview)
+        except Exception as e:
+            print(f"Failed to schedule time trim preview update: {e}")
+
+    def draw_time_trim_frame_previews(self, start_seconds, end_seconds):
+        if not self.time_trim_start_canvas or not self.time_trim_end_canvas:
+            return
+
+        self.draw_time_trim_frame_preview(
+            self.time_trim_start_canvas,
+            self.time_trim_start_image,
+            t("trim.preview_start_frame"),
+            start_seconds,
+            self.time_trim_start_loading,
+        )
+        self.draw_time_trim_frame_preview(
+            self.time_trim_end_canvas,
+            self.time_trim_end_image,
+            t("trim.preview_end_frame"),
+            end_seconds,
+            self.time_trim_end_loading,
+        )
+
+    def draw_time_trim_frame_preview(self, canvas, image, title, seconds, loading):
+        canvas_w = 190
+        canvas_h = 120
+        canvas.delete("all")
+        canvas.create_rectangle(0, 0, canvas_w, canvas_h, fill="#111318", outline=Colors.border)
+
+        if image:
+            x = (canvas_w - image.width()) / 2
+            y = 24 + (72 - image.height()) / 2
+            canvas.create_image(x, y, image=image, anchor="nw")
+        else:
+            canvas.create_rectangle(8, 26, canvas_w - 8, 96, fill=Colors.bg_dark, outline=Colors.border)
+            message = t("trim.preview_frame_loading") if loading else t("trim.preview_frame_no_file")
+            canvas.create_text(
+                canvas_w / 2,
+                61,
+                text=message,
+                anchor="center",
+                fill=Colors.text_secondary,
+                font=("Segoe UI", 9),
+                width=160,
+            )
+
+        canvas.create_rectangle(0, 0, canvas_w, 22, fill=Colors.bg_card, outline="")
+        canvas.create_text(8, 11, text=title, anchor="w", fill=Colors.accent, font=("Segoe UI", 9, "bold"))
+        canvas.create_rectangle(0, 100, canvas_w, canvas_h, fill="#111318", outline="")
+        canvas.create_text(
+            canvas_w / 2,
+            110,
+            text=f"{self.format_seconds_value(seconds)}s",
+            anchor="center",
+            fill=Colors.success,
+            font=("Segoe UI", 9, "bold"),
+        )
 
     def get_time_trim_seconds(self, settings, duration, fps):
         if settings.get("trim_mode") == "frames":
@@ -1089,7 +1430,39 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.set_time_trim_values(start_seconds, end_seconds, geom["fps"])
 
     def on_time_trim_canvas_release(self, _event):
+        handle = self.time_trim_drag_handle
         self.time_trim_drag_handle = None
+        if self.time_trim_geometry:
+            path = self.get_first_video_path()
+            if path:
+                ffmpeg_path = WorkflowVideoTask.get_ffmpeg_path(self.get_ffmpeg_path_setting())
+                if handle == "start":
+                    self.schedule_time_trim_frame_preview(
+                        "start",
+                        ffmpeg_path,
+                        path,
+                        self.time_trim_geometry["start_preview_seconds"],
+                        force=True,
+                    )
+                elif handle == "end":
+                    self.schedule_time_trim_frame_preview(
+                        "end",
+                        ffmpeg_path,
+                        path,
+                        self.time_trim_geometry["end_preview_seconds"],
+                        force=True,
+                    )
+                else:
+                    self.schedule_time_trim_frame_previews(
+                        path,
+                        self.time_trim_geometry["start_preview_seconds"],
+                        self.time_trim_geometry["end_preview_seconds"],
+                        force=True,
+                    )
+                self.draw_time_trim_frame_previews(
+                    self.time_trim_geometry["start_preview_seconds"],
+                    self.time_trim_geometry["end_preview_seconds"],
+                )
 
     def find_time_trim_handle(self, x, y):
         closest = self.time_trim_canvas.find_closest(x, y)
@@ -1443,16 +1816,20 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_close_console.pack(pady=20)
 
     def process_input_paths(self, paths):
+        previous_preview_path = self.get_first_video_path()
         added = 0
         for path in expand_input_paths(paths):
             added += self.process_input_path(path, update_previews=False)
         if added:
+            if previous_preview_path != self.get_first_video_path():
+                self.clear_media_previews()
             self.update_crop_preview()
             self.update_time_trim_preview()
             self.update_command_preview()
         return added
 
     def process_input_path(self, path, update_previews=True):
+        previous_preview_path = self.get_first_video_path()
         self.apply_ffmpeg_path_setting(self.get_ffmpeg_path_setting())
         path = str(path or "").strip()
         if not path:
@@ -1468,6 +1845,8 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.file_list.add_file(f, info=info)
                 added += 1
         if update_previews and added:
+            if previous_preview_path != self.get_first_video_path():
+                self.clear_media_previews()
             self.update_crop_preview()
             self.update_time_trim_preview()
             self.update_command_preview()
@@ -1484,10 +1863,13 @@ class FfmpegApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def remove_file(self, path):
         if path in self.files:
+            previous_preview_path = self.get_first_video_path()
             self.files.remove(path)
             if path in self.files_info:
                 del self.files_info[path]
             self.file_list.remove_file(path)
+            if previous_preview_path != self.get_first_video_path():
+                self.clear_media_previews()
             self.update_crop_preview()
             self.update_time_trim_preview()
             self.update_command_preview()

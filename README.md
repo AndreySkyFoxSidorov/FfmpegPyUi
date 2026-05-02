@@ -50,7 +50,6 @@ You can:
 - **MOV for editing**: MOV output tuned for post-production workflows.
 - **WebM for web**: VP9/Opus output for browser delivery.
 - **GIF from video**: palette-based animated GIFs from video frames.
-- **Audio waveform GIF**: animated waveform GIFs generated from audio.
 - **MP3 audio**: quick audio extraction or conversion to MP3.
 - **WAV audio**: uncompressed WAV audio export.
 
@@ -78,7 +77,7 @@ FfmpegPyUi scans common video, audio, and animation files:
 
 - Video containers: MP4, MOV, MKV, WebM.
 - Audio formats: MP3, WAV, AAC, FLAC, OGG.
-- Animation output: GIF from video frames or audio waveforms.
+- Animation output: GIF from video frames.
 
 ### Video Encoding Controls
 
@@ -130,8 +129,6 @@ FfmpegPyUi scans common video, audio, and animation files:
 ### GIF Tools
 
 - Create GIFs from video frames.
-- Create animated waveform GIFs from audio using FFmpeg `showwaves`.
-- Automatically use video frames when video exists, or audio waveform mode for audio-only sources.
 - Configure GIF width and FPS.
 - Use palette generation and `paletteuse` for cleaner GIF output.
 - Choose dithering: `sierra2_4a`, `bayer`, or no dithering.

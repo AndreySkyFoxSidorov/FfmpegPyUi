@@ -11,7 +11,7 @@ from ffmpegpyui.logic.ffmpeg_runner import FfmpegRunner
 from ffmpegpyui.logic.input_paths import expand_input_paths
 from ffmpegpyui.logic.ffmpeg_paths import resolve_ffmpeg_executable
 from ffmpegpyui.logic.tasks import BaseTask, AviToMp4, AllToWedGL
-from ffmpegpyui.logic.workflow import WorkflowVideoTask, get_builtin_scheme
+from ffmpegpyui.logic.workflow import WorkflowVideoTask, get_builtin_scheme, normalize_workflow_config
 from ffmpegpyui.ui.localization import (
     WORKFLOW_OPTIONS,
     WORKFLOW_SECTIONS,
@@ -116,6 +116,10 @@ class TestLogic(unittest.TestCase):
             "crop.preview_title",
             "crop.preview_loading",
             "trim.preview_title",
+            "trim.preview_start_frame",
+            "trim.preview_end_frame",
+            "trim.preview_frame_loading",
+            "trim.preview_frame_no_file",
             "trim.preview_no_file",
             "trim.preview_info",
         }
@@ -386,7 +390,6 @@ class TestLogic(unittest.TestCase):
             "clip.mov",
             {
                 "output_container": "gif",
-                "gif_source_mode": "video_frames",
                 "gif_width": 480,
                 "gif_fps": 12,
                 "source_width": 1920,
@@ -403,24 +406,29 @@ class TestLogic(unittest.TestCase):
         self.assertIn("paletteuse", filtergraph)
         self.assertTrue(cmd[-1].endswith("_processed.gif"))
 
-    def test_workflow_gif_from_audio_uses_showwaves(self):
+    def test_workflow_gif_requires_video_input(self):
         task = WorkflowVideoTask()
-        cmd = task.build_command(
-            "sound.mp3",
-            {
-                "output_container": "gif",
-                "gif_source_mode": "audio_waveform",
-                "gif_width": 640,
-                "gif_fps": 15,
-                "has_audio": True,
-            },
-        )
 
-        filtergraph = cmd[cmd.index("-filter_complex") + 1]
-        self.assertIn("[0:a]", filtergraph)
-        self.assertIn("showwaves=s=640x360", filtergraph)
-        self.assertIn("paletteuse", filtergraph)
-        self.assertTrue(cmd[-1].endswith("_processed.gif"))
+        with self.assertRaises(ValueError):
+            task.build_command(
+                "sound.mp3",
+                {
+                    "output_container": "gif",
+                    "gif_width": 640,
+                    "gif_fps": 15,
+                    "has_audio": True,
+                    "source_width": 0,
+                    "source_height": 0,
+                },
+            )
+
+    def test_workflow_normalize_removes_legacy_gif_audio_mode(self):
+        config = normalize_workflow_config({
+            "output_container": "gif",
+            "gif_source_mode": "audio_waveform",
+        })
+
+        self.assertNotIn("gif_source_mode", config)
 
     def test_workflow_grouped_filters_append_ffmpeg_filters(self):
         task = WorkflowVideoTask()
